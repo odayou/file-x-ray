@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>文件索引与管理工具</title>
+<style>
+  :root {
+    --bg: #f4f6f9; --panel: #ffffff; --border: #e3e8ef; --text: #1f2937;
+    --muted: #6b7280; --primary: #2563eb; --primary-d: #1d4ed8;
+    --sel: #eef4ff; --shadow: 0 1px 3px rgba(0,0,0,.08);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         background: var(--bg); color: var(--text); font-size: 14px; }
+  header { background: #0f172a; color: #fff; padding: 10px 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; white-space: nowrap; }
+  header input { padding: 6px 8px; border-radius: 6px; border: 1px solid #334155; background: #1e293b; color: #fff; }
+  header input::placeholder { color: #94a3b8; }
+  #rootPath { width: 320px; }
+  #maxDepth { width: 70px; }
+  button { cursor: pointer; border: none; border-radius: 6px; padding: 6px 12px; font-size: 13px; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-d); }
+  .btn-ghost { background: #1e293b; color: #cbd5e1; border: 1px solid #334155; }
+  .btn-ghost:hover { background: #334155; }
+  .btn-sm { padding: 3px 8px; font-size: 12px; }
+  .btn-danger { background: #ef4444; color:#fff; }
+  #stats { margin-left: auto; font-size: 12px; color: #cbd5e1; display: flex; gap: 14px; flex-wrap: wrap; }
+  #stats b { color: #fff; }
+  .toolbar { background: var(--panel); border-bottom: 1px solid var(--border); padding: 8px 16px;
+             display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .toolbar input, .toolbar select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; }
+  #searchInput { width: 240px; }
+  #folderCrumb { font-size: 12px; color: var(--muted); }
+  #folderCrumb b { color: var(--primary); cursor: pointer; }
+  #tagFilter { font-size: 12px; }
+  #tagFilter .chip { background: #eff6ff; border: 1px solid #bfdbfe; color: var(--primary); padding: 1px 8px; border-radius: 10px; }
+  #tagFilter .chip span { cursor: pointer; margin-left: 4px; color: #ef4444; }
+  .spacer { flex: 1; }
+  .layout { display: grid; grid-template-columns: 240px 1fr 360px; height: calc(100vh - 110px); }
+  .col { background: var(--panel); overflow: auto; border-right: 1px solid var(--border); }
+  .col.right { border-right: none; }
+  .col-title { padding: 8px 12px; font-weight: 600; font-size: 12px; color: var(--muted);
+               border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); z-index: 2; }
+  .tree-node { padding: 4px 8px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tree-node:hover { background: var(--sel); }
+  .tree-node.active { background: var(--sel); color: var(--primary); font-weight: 600; }
+  .tree-node .cnt { color: var(--muted); font-size: 11px; margin-left: 4px; }
+  .tagcloud { padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .tagcloud .t { background: #f1f5f9; border: 1px solid var(--border); border-radius: 10px; padding: 2px 8px; font-size: 12px; cursor: pointer; }
+  .tagcloud .t:hover { background: var(--sel); }
+  .tagcloud .t.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .tagcloud .t b { color: var(--muted); margin-left: 3px; }
+  .tagcloud .t.active b { color: #dbeafe; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { position: sticky; top: 0; background: var(--panel); font-size: 12px; color: var(--muted); z-index: 1; }
+  tr.row:hover { background: var(--sel); cursor: pointer; }
+  tr.row.sel { background: var(--sel); }
+  tr.row.active { box-shadow: inset 3px 0 0 var(--primary); }
+  .name-cell { max-width: 240px; word-break: break-all; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; color: #fff; white-space: nowrap; }
+  .note-snip { color: var(--muted); font-size: 12px; max-width: 200px; word-break: break-all; }
+  .tagchips { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+  .tagchips .tg { background: #eef2ff; color: #4338ca; border-radius: 8px; padding: 0 6px; font-size: 11px; }
+  .tagchips .tg span { cursor: pointer; color: #ef4444; margin-left: 3px; }
+  .type-ic { font-size: 11px; color: var(--muted); }
+  .pager { padding: 8px 12px; display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
+  .detail-body { padding: 12px; }
+  .preview { background: #0f172a; border-radius: 8px; min-height: 220px; display: flex; align-items: center; justify-content: center; overflow: hidden; margin-bottom: 12px; }
+  .preview img, .preview video, .preview iframe { max-width: 100%; max-height: 360px; }
+  .preview .ph { color: #94a3b8; padding: 20px; text-align: center; font-size: 13px; }
+  .preview pre { color: #e2e8f0; background: #0f172a; padding: 12px; width: 100%; height: 320px; overflow: auto; font-size: 12px; margin: 0; white-space: pre-wrap; word-break: break-all; }
+  .meta-row { display: flex; gap: 6px; font-size: 12px; color: var(--muted); margin: 4px 0; }
+  .meta-row b { color: var(--text); font-weight: 500; min-width: 52px; }
+  label.fld { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  textarea, select.status-sel { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 6px; font-size: 13px; font-family: inherit; }
+  textarea { min-height: 80px; resize: vertical; }
+  .detail-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  #tasksPanel { position: fixed; right: 0; top: 0; width: 340px; height: 100vh; background: var(--panel);
+                border-left: 1px solid var(--border); box-shadow: -2px 0 8px rgba(0,0,0,.1); transform: translateX(100%);
+                transition: transform .2s; z-index: 50; display: flex; flex-direction: column; }
+  #tasksPanel.open { transform: translateX(0); }
+  #tasksPanel .head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  #tasksPanel .head h3 { margin: 0; font-size: 14px; }
+  .task-item { border-bottom: 1px solid var(--border); padding: 10px 14px; }
+  .task-item .q { font-weight: 600; }
+  .task-item .meta { font-size: 11px; color: var(--muted); margin: 4px 0; }
+  .task-item .acts { display: flex; gap: 8px; margin-top: 6px; }
+  .empty { color: var(--muted); text-align: center; padding: 40px 10px; font-size: 13px; }
+  #scanOverlay { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: none; align-items: center; justify-content: center; z-index: 100; }
+  #scanOverlay.show { display: flex; }
+  .scan-box { background: #fff; border-radius: 10px; padding: 24px 32px; text-align: center; min-width: 280px; }
+  .scan-box .num { font-size: 28px; font-weight: 700; color: var(--primary); }
+  #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #0f172a; color: #fff;
+           padding: 10px 18px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; z-index: 200; pointer-events: none; }
+  #toast.show { opacity: .95; }
+  a.dl { color: var(--primary); }
+  .selbar { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 6px 10px; font-size: 12px; display: flex; gap: 8px; align-items: center; }
+  /* 转写 */
+  .transcript-block { margin: 8px 0; }
+  #transcriptView { width:100%; min-height:120px; background:#f8fafc; border:1px solid var(--border); border-radius:6px; padding:8px; font-size:12px; color:var(--text); resize:vertical; font-family:inherit; }
+  #transcribeOverlay { position: fixed; inset:0; background: rgba(15,23,42,.5); display:none; align-items:center; justify-content:center; z-index:130; }
+  #transcribeOverlay.show { display:flex; }
+  .tr-box { background:#fff; border-radius:10px; padding:24px 32px; text-align:center; min-width:320px; }
+  .tr-box .num { font-size:22px; font-weight:700; color:var(--primary); margin-top:8px; }
+  .tr-box .cur { color:var(--muted); font-size:12px; margin-top:8px; word-break:break-all; }
+  /* 状态管理弹窗 */
+  #statusModal { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: none; align-items: center; justify-content: center; z-index: 120; }
+  #statusModal.show { display: flex; }
+  .modal-box { background: #fff; border-radius: 10px; padding: 20px 24px; width: 420px; max-width: 92vw; }
+  .modal-box h3 { margin: 0 0 12px; font-size: 15px; }
+  .st-row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+  .st-row input[type=text] { flex: 1; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; }
+  .st-row input[type=color] { width: 36px; height: 30px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📁 文件索引与管理工具</h1>
+  <input id="rootPath" placeholder="根目录路径，如 D:\MyFiles 或 /home/user/files" />
+  <input id="maxDepth" type="number" min="0" placeholder="层级" title="扫描最大层级，0=仅根目录文件，留空=不限" />
+  <button class="btn-primary" id="scanBtn">扫描建索引</button>
+  <div id="stats"></div>
+</header>
+
+<div class="toolbar">
+  <input id="searchInput" placeholder="搜索 文件名 / 备注 / 内容 / 标签 / 转写文字 / 图中文字" />
+  <button class="btn-primary btn-sm" id="searchBtn">搜索</button>
+  <select id="statusFilter"><option value="all">全部状态</option></select>
+  <input id="extFilter" placeholder="类型过滤如 .mp4" style="width:90px" />
+  <span id="folderCrumb">位置：<b data-folder="">全部</b></span>
+  <span id="tagFilter"></span>
+  <div class="spacer"></div>
+  <button class="btn-ghost btn-sm" id="statusMgrBtn">⚙ 管理状态</button>
+  <button class="btn-ghost btn-sm" id="tasksBtn">📋 任务清单</button>
+  <div class="selbar" id="selBar" style="display:none">
+    <span id="selCount">已选 0</span>
+    <button class="btn-primary btn-sm" id="exportBtn">导出选中</button>
+    <button class="btn-ghost btn-sm" id="transcribeSelBtn">🎙 转写选中</button>
+    <button class="btn-ghost btn-sm" id="ocrSelBtn">🖼 识别选中图片</button>
+    <button class="btn-ghost btn-sm" id="clearSelBtn">清空</button>
+  </div>
+</div>
+
+<div class="layout">
+  <!-- 左：文件夹树 + 标签云 -->
+  <div class="col" id="treeCol">
+    <div class="col-title">文件夹树
+      <select id="treeDepth" style="float:right;font-size:11px;padding:1px">
+        <option value="99">全部层级</option>
+        <option value="1">1 层</option><option value="2">2 层</option>
+        <option value="3">3 层</option><option value="4">4 层</option>
+      </select>
+    </div>
+    <div id="tree"></div>
+    <div class="col-title">🏷 主题标签</div>
+    <div class="tagcloud" id="tagCloud"><div class="empty" style="padding:10px">暂无标签</div></div>
+  </div>
+
+  <!-- 中：文件清单 -->
+  <div class="col" id="listCol">
+    <div class="col-title">
+      <input type="checkbox" id="selectAll" style="vertical-align:middle" /> 全选本页
+      <span id="listTitle" style="float:right;font-weight:400"></span>
+    </div>
+    <table>
+      <thead><tr>
+        <th style="width:28px"></th>
+        <th>名称</th><th>类型</th><th>大小</th><th>修改时间</th><th>状态</th><th>备注 / 标签</th>
+      </tr></thead>
+      <tbody id="fileRows"></tbody>
+    </table>
+    <div class="pager">
+      <button class="btn-ghost btn-sm" id="prevPage">上一页</button>
+      <span id="pageInfo"></span>
+      <button class="btn-ghost btn-sm" id="nextPage">下一页</button>
+    </div>
+  </div>
+
+  <!-- 右：详情 -->
+  <div class="col right" id="detailCol">
+    <div class="col-title">详情 / 预览</div>
+    <div class="detail-body" id="detail">
+      <div class="empty">← 在中间清单点击一个文件查看详情与预览</div>
+    </div>
+  </div>
+</div>
+
+<!-- 任务清单面板 -->
+<div id="tasksPanel">
+  <div class="head"><h3>📋 搜索任务清单</h3><button class="btn-ghost btn-sm" id="closeTasks">关闭</button></div>
+  <div id="tasksList" style="overflow:auto;flex:1"></div>
+</div>
+
+<!-- 状态管理弹窗 -->
+<div id="statusModal"><div class="modal-box">
+  <h3>⚙ 管理状态（名称 + 颜色）</h3>
+  <div id="statusEditor"></div>
+  <div class="modal-actions">
+    <button class="btn-ghost btn-sm" id="addStatusRow">+ 新增状态</button>
+    <button class="btn-ghost btn-sm" id="cancelStatus">取消</button>
+    <button class="btn-primary btn-sm" id="saveStatus">保存</button>
+  </div>
+</div></div>
+
+<!-- 扫描进度 -->
+<div id="scanOverlay"><div class="scan-box">
+  <div>正在扫描并建立索引…</div>
+  <div class="num" id="scanNum">0</div>
+  <div style="color:var(--muted);font-size:12px;margin-top:6px" id="scanRoot"></div>
+</div></div>
+
+<!-- 转写进度 -->
+<div id="transcribeOverlay"><div class="tr-box">
+  <div>🎙 正在转写音频 / 视频…</div>
+  <div class="num" id="trNum">0 / 0</div>
+  <div class="cur" id="trCur"></div>
+</div></div>
+
+<!-- OCR 进度 -->
+<div id="ocrOverlay"><div class="tr-box">
+  <div>🖼 正在识别图片文字（Umi-OCR / tesseract）…</div>
+  <div class="num" id="ocrNum">0 / 0</div>
+  <div class="cur" id="ocrCur"></div>
+</div></div>
+
+<div id="toast"></div>
+
+<script>
+const state = { search:"", status:"all", ext:"", folder:"", tag:"", page:1, pageSize:100, sort:"name",
+                selection:new Set(), currentId:null, statuses:[], whisper:null, ocr:null };
+let treeData = [];
+
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'),2200); }
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function humanSize(b){ if(b==null) return ''; const u=['B','KB','MB','GB','TB']; let i=0,n=b; while(n>=1024&&i<u.length-1){n/=1024;i++;} return (i?n.toFixed(1):n)+' '+u[i]; }
+function fmtDate(ts){ if(!ts) return ''; return new Date(ts*1000).toLocaleString('zh-CN'); }
+function statusColor(label){ const s=state.statuses.find(x=>x.label===label); return s?s.color:'#999999'; }
+
+async function api(url, opts){ const r=await fetch(url, Object.assign({headers:{'Content-Type':'application/json'}}, opts)); if(!r.ok){ let m=''; try{m=(await r.json()).detail}catch(e){} throw new Error(m||('请求失败 '+r.status)); } return r.json(); }
+const apiGet=u=>api(u); const apiPost=(u,b)=>api(u,{method:'POST',body:JSON.stringify(b||{})}); const apiPut=(u,b)=>api(u,{method:'PUT',body:JSON.stringify(b||{})});
+
+// ---------- 状态（自定义） ----------
+async function loadStatuses(){
+  const r=await apiGet('/api/statuses'); state.statuses=r.statuses;
+  const sf=document.getElementById('statusFilter');
+  sf.innerHTML='<option value="all">全部状态</option>'+state.statuses.map(s=>`<option value="${esc(s.label)}">${esc(s.label)}</option>`).join('');
+}
+
+// ---------- 扫描 ----------
+async function doScan(){
+  const root=document.getElementById('rootPath').value.trim();
+  if(!root){ toast('请先填写根目录'); return; }
+  const md=document.getElementById('maxDepth').value.trim();
+  let sid;
+  try{ const r=await apiPost('/api/scan',{root, max_depth: md===''?null:md}); sid=r.scan_id; }
+  catch(e){ toast('扫描启动失败: '+e.message); return; }
+  document.getElementById('scanOverlay').classList.add('show');
+  document.getElementById('scanRoot').textContent=root;
+  pollScan(sid);
+}
+async function pollScan(sid){
+  const r=await apiGet('/api/scan/'+sid);
+  document.getElementById('scanNum').textContent=r.processed.toLocaleString();
+  if(!r.done){ setTimeout(()=>pollScan(sid),500); return; }
+  document.getElementById('scanOverlay').classList.remove('show');
+  if(r.error){ toast('扫描出错: '+r.error); return; }
+  toast('扫描完成，共 '+r.processed.toLocaleString()+' 个文件');
+  await loadStats(); await loadTree(); await loadTags(); await loadFiles();
+}
+
+// ---------- 统计 ----------
+async function loadStats(){
+  const r=await apiGet('/api/stats');
+  let s=''; for(const k in r.by_status){ s+=`<span style="color:${statusColor(k)}">●</span>${k}:<b>${r.by_status[k]}</b> `; }
+  document.getElementById('stats').innerHTML=`总 <b>${r.total.toLocaleString()}</b> ｜ 已打标签 <b>${r.tagged}</b> ｜ 已转写 <b>${r.transcribed||0}</b> ｜ 已识别图片 <b>${r.ocr_count||0}</b> ${s}`;
+}
+
+// ---------- 文件夹树 ----------
+async function loadTree(){
+  const d=document.getElementById('treeDepth').value;
+  const r=await apiGet('/api/tree?depth='+d);
+  treeData=r.folders||[]; renderTree();
+}
+function renderTree(){
+  const el=document.getElementById('tree');
+  if(!treeData.length){ el.innerHTML='<div class="empty">暂无数据，请先扫描</div>'; return; }
+  const folders=treeData.slice().sort((a,b)=> a.depth-b.depth || a.path.localeCompare(b.path));
+  el.innerHTML=folders.map(f=>{
+    const pad=8+f.depth*14, active=state.folder===f.path?'active':'';
+    return `<div class="tree-node ${active}" style="padding-left:${pad}px" data-folder="${esc(f.path)}">📂 ${esc(f.name)}<span class="cnt">(${f.count})</span></div>`;
+  }).join('');
+  el.querySelectorAll('.tree-node').forEach(n=>n.onclick=()=>{
+    state.folder=n.dataset.folder; state.page=1; renderTree(); updateCrumb(); loadFiles();
+  });
+}
+
+// ---------- 标签云 ----------
+async function loadTags(){
+  const r=await apiGet('/api/tags');
+  const el=document.getElementById('tagCloud');
+  if(!r.tags.length){ el.innerHTML='<div class="empty" style="padding:10px">暂无标签</div>'; return; }
+  el.innerHTML=r.tags.map(t=>{
+    const active=state.tag===t.tag?'active':'';
+    return `<div class="t ${active}" data-tag="${esc(t.tag)}">#${esc(t.tag)}<b>${t.count}</b></div>`;
+  }).join('');
+  el.querySelectorAll('.t').forEach(n=>n.onclick=()=>{
+    state.tag = state.tag===n.dataset.tag ? '' : n.dataset.tag;
+    state.page=1; loadTags(); renderTagFilter(); loadFiles();
+  });
+}
+function renderTagFilter(){
+  const el=document.getElementById('tagFilter');
+  if(!state.tag){ el.innerHTML=''; return; }
+  el.innerHTML=`<span class="chip">#${esc(state.tag)}<span data-clear="1">✕</span></span>`;
+  el.querySelector('[data-clear]').onclick=()=>{ state.tag=''; loadTags(); renderTagFilter(); loadFiles(); };
+}
+
+// ---------- 文件清单 ----------
+async function loadFiles(){
+  const p=new URLSearchParams({ search:state.search, status:state.status, ext:state.ext,
+    folder:state.folder, tag:state.tag, page:state.page, page_size:state.pageSize, sort:state.sort });
+  const r=await apiGet('/api/files?'+p.toString());
+  renderList(r);
+}
+function tagChipsHtml(tags){
+  if(!tags||!tags.length) return '';
+  return `<div class="tagchips">`+tags.map(t=>`<span class="tg">#${esc(t)}</span>`).join('')+`</div>`;
+}
+function mediaBlock(d){
+  if(d.category==='pdf'){
+    const len=(d.pdf_text||'').length;
+    return `<div class="transcript-block">
+      <div class="meta-row"><b>PDF 文字</b><span>${len?('已抽取 '+len+' 字，可被搜索'):'（扫描件/无文字层，暂无文字）'}</span></div>
+      <textarea id="transcriptView" readonly placeholder="PDF 抽取的文字内容（存入索引，可被搜索）">${esc(d.pdf_text||'')}</textarea>
+      <div class="detail-actions">
+        ${len?'<button class="btn-ghost btn-sm" id="copyTranscript">复制文字</button>':''}
+      </div>
+    </div>`;
+  }
+  if(d.category==='image'){
+    return `<div class="transcript-block">
+      <div class="meta-row"><b>图中文字</b><span>${d.transcript?('已识别文字稿'+(d.transcribed_at?' · '+fmtDate(d.transcribed_at):'')):'尚未识别'+(d.can_ocr?'（可点击下方按钮）':'（当前环境未启用 OCR）')}</span></div>
+      <textarea id="transcriptView" readonly placeholder="点击下方“识别图中文字”生成可搜索的文字稿（支持中文）">${esc(d.transcript||'')}</textarea>
+      <div class="detail-actions">
+        ${d.can_ocr?'<button class="btn-primary btn-sm" id="ocrBtn">🖼 识别图中文字</button>':''}
+        ${d.transcript?'<button class="btn-ghost btn-sm" id="copyTranscript">复制文字稿</button>':''}
+      </div>
+    </div>`;
+  }
+  if(d.category==='audio'||d.category==='video'){
+    return `<div class="transcript-block">
+      <div class="meta-row"><b>转写</b><span>${d.transcript?('已生成文字稿'+(d.transcribed_at?' · '+fmtDate(d.transcribed_at):'')):'尚未转写'}</span></div>
+      <textarea id="transcriptView" readonly placeholder="点击下方“转写此文件”生成可搜索的文字稿">${esc(d.transcript||'')}</textarea>
+      <div class="detail-actions">
+        ${d.can_transcribe?'<button class="btn-primary btn-sm" id="transcribeBtn">🎙 转写此文件</button>':''}
+        ${d.transcript?'<button class="btn-ghost btn-sm" id="copyTranscript">复制文字稿</button>':''}
+      </div>
+    </div>`;
+  }
+  return '';
+}
+function renderList(r){
+  const tb=document.getElementById('fileRows');
+  if(!r.items.length){ tb.innerHTML='<tr><td colspan="7"><div class="empty">没有匹配的文件</div></td></tr>'; }
+  else{
+    tb.innerHTML=r.items.map(it=>{
+      const c=statusColor(it.status);
+      const sel=state.selection.has(it.id)?'sel':'';
+      const act=state.currentId===it.id?'active':'';
+      const note=it.note?esc(it.note):'<span style="color:#cbd5e1">—</span>';
+      const tags=tagChipsHtml(it.tags);
+      return `<tr class="row ${sel} ${act}" data-id="${it.id}" data-path="${esc(it.path)}">
+        <td><input type="checkbox" class="rowchk" ${state.selection.has(it.id)?'checked':''}></td>
+        <td class="name-cell">${esc(it.name)}</td>
+        <td class="type-ic">${esc(it.ext||'')}</td>
+        <td>${humanSize(it.size)}</td>
+        <td class="type-ic">${fmtDate(it.mtime)}</td>
+        <td><span class="badge" style="background:${c}">${esc(it.status)}</span></td>
+        <td class="note-snip">${note}${tags}</td>
+      </tr>`;
+    }).join('');
+  }
+  tb.querySelectorAll('tr.row').forEach(tr=>{
+    tr.querySelector('.rowchk').onclick=e=>{ e.stopPropagation(); toggleSelect(parseInt(tr.dataset.id)); };
+    tr.onclick=()=>selectFile(parseInt(tr.dataset.id), tr.dataset.path);
+  });
+  const total=r.total, ps=state.pageSize, pages=Math.max(1,Math.ceil(total/ps));
+  document.getElementById('pageInfo').textContent=`第 ${state.page}/${pages} 页 · 共 ${total.toLocaleString()} 条`;
+  document.getElementById('listTitle').textContent= state.folder?('📂 '+state.folder):'全部文件';
+  updateSelBar();
+}
+function toggleSelect(id){
+  if(state.selection.has(id)) state.selection.delete(id); else state.selection.add(id);
+  const tr=document.querySelector(`tr.row[data-id="${id}"]`);
+  if(tr){ tr.classList.toggle('sel', state.selection.has(id)); const c=tr.querySelector('.rowchk'); if(c)c.checked=state.selection.has(id); }
+  updateSelBar();
+}
+function updateSelBar(){
+  const bar=document.getElementById('selBar');
+  if(state.selection.size>0){ bar.style.display='flex'; document.getElementById('selCount').textContent='已选 '+state.selection.size; }
+  else bar.style.display='none';
+  const sa=document.getElementById('selectAll'); if(sa) sa.checked=false;
+}
+
+// ---------- 详情 ----------
+async function selectFile(id, path){
+  state.currentId=id;
+  document.querySelectorAll('tr.row').forEach(tr=>tr.classList.toggle('active', parseInt(tr.dataset.id)===id));
+  let d;
+  try{ d=await apiGet('/api/file/'+id); }catch(e){ toast('加载失败: '+e.message); return; }
+  renderDetail(d);
+}
+function renderDetail(d){
+  let preview='';
+  if(!d.exists){ preview='<div class="ph">⚠ 原文件不存在或已被移动/删除<br>'+esc(d.path)+'</div>'; }
+  else if(d.category==='image'){ preview=`<img src="${d.raw_url}" alt="preview">`; }
+  else if(d.category==='video'){ preview=`<video controls src="${d.raw_url}"></video>`; }
+  else if(d.category==='audio'){ preview=`<audio controls src="${d.raw_url}" style="width:100%;margin-top:80px"></audio>`; }
+  else if(d.category==='pdf'){ preview=`<iframe src="${d.raw_url}" style="width:100%;height:360px;border:0"></iframe>`; }
+  else if(d.category==='text'){ preview=`<pre>${esc(d.preview_text)||'(空文件)'}</pre>`; }
+  else{ preview='<div class="ph">该类型不支持内嵌预览<br><a class="dl" href="'+d.raw_url+'" target="_blank">打开/下载原文件</a></div>'; }
+
+  const statusOpts=state.statuses.map(s=>`<option ${s.label===d.status?'selected':''}>${esc(s.label)}</option>`).join('');
+  const tagsHtml=(d.tags||[]).map(t=>`<span class="tg" data-tag="${esc(t)}">#${esc(t)}<span data-x="1">✕</span></span>`).join('');
+  document.getElementById('detail').innerHTML=`
+    <div class="preview">${preview}</div>
+    <div class="meta-row"><b>名称</b><span>${esc(d.name)}</span></div>
+    <div class="meta-row"><b>路径</b><span style="word-break:break-all">${esc(d.path)}</span></div>
+    <div class="meta-row"><b>大小</b><span>${humanSize(d.size)}</span><b>类型</b><span>${esc(d.ext||'')}</span></div>
+    <div class="meta-row"><b>修改</b><span>${fmtDate(d.mtime)}</span><b>层级</b><span>${d.depth}</span></div>
+    ${mediaBlock(d)}
+    <label class="fld">状态</label>
+    <select class="status-sel" id="detailStatus">${statusOpts}</select>
+    <label class="fld">主题标签（回车添加，可多个）</label>
+    <div class="tagchips" id="detailTags" style="margin-bottom:4px">${tagsHtml||'<span style="color:#cbd5e1;font-size:12px">暂无标签</span>'}</div>
+    <input id="addTagInput" placeholder="输入标签后回车，如 旅行 / 待翻译" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px" />
+    <label class="fld">备注</label>
+    <textarea id="detailNote" placeholder="给这个文件写备注…">${esc(d.note)}</textarea>
+    <div class="detail-actions">
+      <button class="btn-primary btn-sm" id="saveDetail">保存备注/状态/标签</button>
+      <button class="btn-ghost btn-sm" id="openFolder">打开所在文件夹</button>
+      <button class="btn-ghost btn-sm" id="toggleSel">${state.selection.has(d.id)?'移出选择':'加入选择'}</button>
+      <a class="btn-ghost btn-sm" style="text-decoration:none" href="${d.raw_url}" target="_blank">新窗口打开</a>
+    </div>`;
+  const save=async()=>{
+    const tags=Array.from(document.querySelectorAll('#detailTags .tg')).map(x=>x.dataset.tag);
+    try{ await apiPut('/api/file/'+d.id,{note:document.getElementById('detailNote').value, status:document.getElementById('detailStatus').value, tags});
+      toast('已保存'); loadStats(); loadTags(); loadFiles(); }catch(e){ toast('保存失败: '+e.message); }
+  };
+  document.getElementById('saveDetail').onclick=save;
+  document.getElementById('openFolder').onclick=async()=>{ try{ await apiPost('/api/open',{path:d.path}); toast('已调用系统打开文件夹'); }catch(e){ toast('打开失败: '+e.message); } };
+  document.getElementById('toggleSel').onclick=()=>{ toggleSelect(d.id); renderDetail(d); };
+  const trBtn=document.getElementById('transcribeBtn');
+  if(trBtn) trBtn.onclick=()=>startTranscribe([d.id]);
+  const ocrBtn=document.getElementById('ocrBtn');
+  if(ocrBtn) ocrBtn.onclick=()=>startOcr([d.id]);
+  const cpBtn=document.getElementById('copyTranscript');
+  if(cpBtn) cpBtn.onclick=()=>{ const t=document.getElementById('transcriptView').value; navigator.clipboard.writeText(t).then(()=>toast('已复制文字稿')).catch(()=>toast('复制失败，请手动选择')); };
+  // 标签删除
+  document.querySelectorAll('#detailTags .tg [data-x]').forEach(x=>x.onclick=()=>{ x.parentElement.remove(); });
+  // 标签添加
+  const ai=document.getElementById('addTagInput');
+  ai.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault();
+    const v=ai.value.trim(); if(!v) return;
+    const cur=Array.from(document.querySelectorAll('#detailTags .tg')).map(x=>x.dataset.tag);
+    if(!cur.includes(v)){ const span=document.createElement('span'); span.className='tg'; span.dataset.tag=v;
+      span.innerHTML=`#${esc(v)}<span data-x="1">✕</span>`; span.querySelector('[data-x]').onclick=()=>span.remove();
+      document.getElementById('detailTags').appendChild(span); }
+    ai.value=''; } });
+}
+
+// ---------- 搜索 / 过滤 ----------
+function runSearch(){
+  state.search=document.getElementById('searchInput').value.trim();
+  state.status=document.getElementById('statusFilter').value;
+  state.ext=document.getElementById('extFilter').value.trim().toLowerCase();
+  state.folder=document.querySelector('#folderCrumb b').dataset.folder||'';
+  state.page=1;
+  loadFiles(); saveTask();
+}
+async function saveTask(){
+  try{ await apiPost('/api/tasks',{query:state.search,status_filter:state.status,ext_filter:state.ext,folder_filter:state.folder,tag_filter:state.tag}); }
+  catch(e){ /* 非致命 */ }
+}
+function updateCrumb(){
+  const cr=document.getElementById('folderCrumb');
+  if(!state.folder){ cr.innerHTML='位置：<b data-folder="">全部</b>'; }
+  else{
+    const parts=state.folder.split('/'); let html='位置：<b data-folder="">全部</b> / '; let acc='';
+    parts.forEach((p,i)=>{ acc= i===0?p:acc+'/'+p; html+=`<b data-folder="${esc(acc)}">${esc(p)}</b>${i<parts.length-1?' / ':''}`; });
+    cr.innerHTML=html;
+  }
+  cr.querySelectorAll('b').forEach(b=>b.onclick=()=>{ state.folder=b.dataset.folder||''; state.page=1; renderTree(); updateCrumb(); loadFiles(); });
+}
+
+// ---------- 任务清单 ----------
+async function loadTasks(){
+  const r=await apiGet('/api/tasks');
+  const el=document.getElementById('tasksList');
+  if(!r.tasks.length){ el.innerHTML='<div class="empty">还没有搜索任务<br>每次搜索会自动记录到这里</div>'; return; }
+  el.innerHTML=r.tasks.map(t=>{
+    const flt=[]; if(t.status_filter&&t.status_filter!=='all')flt.push('状态:'+t.status_filter); if(t.ext_filter)flt.push('类型:'+t.ext_filter); if(t.folder_filter)flt.push('目录:'+t.folder_filter); if(t.tag_filter)flt.push('标签:#'+t.tag_filter);
+    return `<div class="task-item">
+      <div class="q">${(t.query||'(空查询)')+(t.tag_filter?' #'+esc(t.tag_filter):'')}</div>
+      <div class="meta">${flt.join(' · ')||'无附加过滤'} ｜ 结果 <b>${t.result_count}</b> ｜ ${fmtDate(t.last_run)}</div>
+      <div class="acts">
+        <button class="btn-primary btn-sm" data-act="apply" data-id="${t.id}">应用结果</button>
+        <button class="btn-ghost btn-sm" data-act="retry" data-id="${t.id}">重试</button>
+      </div>
+    </div>`;
+  }).join('');
+  el.querySelectorAll('button[data-act]').forEach(b=>b.onclick=async()=>{
+    try{ const r2=await apiPost('/api/tasks/'+b.dataset.id+'/retry'); applyTaskResults(r2);
+      if(b.dataset.act==='retry'){ toast('已重试，结果 '+r2.task.result_count); loadTasks(); }
+      else document.getElementById('tasksPanel').classList.remove('open');
+    }catch(e){ toast('操作失败: '+e.message); }
+  });
+}
+function applyTaskResults(r2){
+  const tb=document.getElementById('fileRows');
+  if(!r2.items.length){ tb.innerHTML='<tr><td colspan="7"><div class="empty">没有匹配的文件</div></td></tr>'; }
+  else{
+    tb.innerHTML=r2.items.map(it=>{
+      const c=statusColor(it.status); const sel=state.selection.has(it.id)?'sel':'';
+      const note=it.note?esc(it.note):'<span style="color:#cbd5e1">—</span>';
+      const tags=tagChipsHtml(it.tags);
+      return `<tr class="row ${sel}" data-id="${it.id}" data-path="${esc(it.path)}">
+        <td><input type="checkbox" class="rowchk" ${state.selection.has(it.id)?'checked':''}></td>
+        <td class="name-cell">${esc(it.name)}</td><td class="type-ic">${esc(it.ext||'')}</td>
+        <td>${humanSize(it.size)}</td><td class="type-ic">${fmtDate(it.mtime)}</td>
+        <td><span class="badge" style="background:${c}">${esc(it.status)}</span></td>
+        <td class="note-snip">${note}${tags}</td></tr>`;
+    }).join('');
+    tb.querySelectorAll('tr.row').forEach(tr=>{
+      tr.querySelector('.rowchk').onclick=e=>{ e.stopPropagation(); toggleSelect(parseInt(tr.dataset.id)); };
+      tr.onclick=()=>selectFile(parseInt(tr.dataset.id), tr.dataset.path);
+    });
+  }
+  document.getElementById('listTitle').textContent='任务结果';
+  document.getElementById('pageInfo').textContent='结果 '+r2.items.length+' 条（最多显示500）';
+}
+
+// ---------- 转写（语音/视频 -> 文字） ----------
+async function startTranscribe(ids){
+  if(!state.whisper || !state.whisper.available){ toast('转写功能未安装：pip install faster-whisper'); return; }
+  let jid;
+  try{ const r=await apiPost('/api/transcribe',{ids}); jid=r.job_id; }
+  catch(e){ toast('启动转写失败: '+e.message); return; }
+  document.getElementById('transcribeOverlay').classList.add('show');
+  pollTranscribe(jid);
+}
+async function pollTranscribe(jid){
+  const r=await apiGet('/api/transcribe/'+jid);
+  document.getElementById('trNum').textContent=r.done+' / '+r.total;
+  document.getElementById('trCur').textContent = r.finished
+    ? '处理完成' : (r.current ? ('当前: '+r.current) : '加载模型中…（首次使用需下载模型，请稍候）');
+  if(!r.finished){ setTimeout(()=>pollTranscribe(jid), 800); return; }
+  document.getElementById('transcribeOverlay').classList.remove('show');
+  if(r.error){ toast('转写出错: '+r.error); }
+  else { toast('转写完成，共处理 '+r.total+' 个文件'); }
+  if(state.currentId) selectFile(state.currentId);
+  await loadStats(); await loadFiles();
+}
+
+// ---------- OCR（图片 -> 文字，Umi-OCR 优先 + tesseract 兜底） ----------
+async function startOcr(ids){
+  let jid;
+  try{ const r=await apiPost('/api/ocr',{ids}); jid=r.job_id; }
+  catch(e){ toast('启动识别失败: '+e.message); return; }
+  document.getElementById('ocrOverlay').classList.add('show');
+  pollOcr(jid);
+}
+async function pollOcr(jid){
+  const r=await apiGet('/api/ocr/'+jid);
+  document.getElementById('ocrNum').textContent=r.done+' / '+r.total;
+  document.getElementById('ocrCur').textContent = r.finished
+    ? '处理完成' : (r.current ? ('当前: '+r.current) : '正在识别…');
+  if(!r.finished){ setTimeout(()=>pollOcr(jid), 800); return; }
+  document.getElementById('ocrOverlay').classList.remove('show');
+  if(r.error){ toast('识别出错: '+r.error); }
+  else { toast('识别完成，共处理 '+r.total+' 个图片'); }
+  if(state.currentId) selectFile(state.currentId);
+  await loadStats(); await loadFiles();
+}
+
+// ---------- 导出 ----------
+async function doExport(){
+  if(!state.selection.size){ toast('请先勾选文件'); return; }
+  const ids=Array.from(state.selection);
+  const name=prompt('导出压缩包名称：', 'file_index_export');
+  if(name===null) return;
+  const sidecar=confirm('是否为每个文件额外生成 .文件名.note.json 备注副文件？\n（取消则仅在压缩包根目录提供 manifest 清单）');
+  try{
+    const r=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids, sidecar, name})});
+    if(!r.ok) throw new Error('导出失败');
+    const blob=await r.blob(); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name+'.zip'; a.click();
+    toast('已导出 '+ids.length+' 个文件（含备注清单）');
+  }catch(e){ toast('导出失败: '+e.message); }
+}
+
+// ---------- 状态管理弹窗 ----------
+function openStatusModal(){
+  const ed=document.getElementById('statusEditor');
+  ed.innerHTML=state.statuses.map((s,i)=>`
+    <div class="st-row">
+      <input type="color" value="${s.color}">
+      <input type="text" value="${esc(s.label)}">
+      <button class="btn-danger btn-sm" data-del="${i}">删</button>
+    </div>`).join('');
+  ed.querySelectorAll('.st-row').forEach(row=>{
+    row.querySelector('[data-del]').onclick=()=>row.remove();
+  });
+  document.getElementById('statusModal').classList.add('show');
+}
+async function saveStatuses(){
+  const rows=document.querySelectorAll('#statusEditor .st-row');
+  const lst=[];
+  rows.forEach(r=>{ const color=r.querySelector('input[type=color]').value; const label=r.querySelector('input[type=text]').value.trim();
+    if(label) lst.push({label, color}); });
+  if(!lst.length){ toast('至少需要一个状态'); return; }
+  try{ const r=await apiPut('/api/statuses',{statuses:lst}); state.statuses=r.statuses;
+    document.getElementById('statusModal').classList.remove('show');
+    await loadStatuses(); if(state.currentId) selectFile(state.currentId); loadStats(); loadFiles();
+    toast('状态已更新'); }catch(e){ toast('保存失败: '+e.message); }
+}
+
+// ---------- 事件绑定 ----------
+document.getElementById('scanBtn').onclick=doScan;
+document.getElementById('searchBtn').onclick=runSearch;
+document.getElementById('searchInput').addEventListener('keydown',e=>{ if(e.key==='Enter') runSearch(); });
+document.getElementById('statusFilter').onchange=runSearch;
+document.getElementById('extFilter').addEventListener('keydown',e=>{ if(e.key==='Enter') runSearch(); });
+document.getElementById('treeDepth').onchange=loadTree;
+document.getElementById('selectAll').onchange=e=>{
+  const chk=e.target.checked;
+  document.querySelectorAll('tr.row').forEach(tr=>{ const id=parseInt(tr.dataset.id); if(chk)state.selection.add(id); else state.selection.delete(id); tr.classList.toggle('sel',chk); tr.querySelector('.rowchk').checked=chk; });
+  updateSelBar();
+};
+document.getElementById('prevPage').onclick=()=>{ if(state.page>1){ state.page--; loadFiles(); } };
+document.getElementById('nextPage').onclick=()=>{ state.page++; loadFiles(); };
+document.getElementById('tasksBtn').onclick=()=>{ document.getElementById('tasksPanel').classList.toggle('open'); if(document.getElementById('tasksPanel').classList.contains('open')) loadTasks(); };
+document.getElementById('closeTasks').onclick=()=>document.getElementById('tasksPanel').classList.remove('open');
+document.getElementById('exportBtn').onclick=doExport;
+document.getElementById('clearSelBtn').onclick=()=>{ state.selection.clear(); updateSelBar(); loadFiles(); };
+document.getElementById('transcribeSelBtn').onclick=()=>{
+  const ids=Array.from(state.selection);
+  if(!ids.length){ toast('请先勾选文件'); return; }
+  startTranscribe(ids);
+};
+document.getElementById('ocrSelBtn').onclick=()=>{
+  const ids=Array.from(state.selection);
+  if(!ids.length){ toast('请先勾选文件'); return; }
+  startOcr(ids);
+};
+document.getElementById('statusMgrBtn').onclick=openStatusModal;
+document.getElementById('cancelStatus').onclick=()=>document.getElementById('statusModal').classList.remove('show');
+document.getElementById('saveStatus').onclick=saveStatuses;
+document.getElementById('addStatusRow').onclick=()=>{
+  const ed=document.getElementById('statusEditor');
+  const d=document.createElement('div'); d.className='st-row';
+  d.innerHTML=`<input type="color" value="#64748b"><input type="text" placeholder="新状态名"><button class="btn-danger btn-sm" data-del>删</button>`;
+  d.querySelector('[data-del]').onclick=()=>d.remove(); ed.appendChild(d);
+};
+
+// ---------- 初始化 ----------
+updateCrumb(); renderTagFilter();
+loadStatuses().catch(()=>{});
+apiGet('/api/stats').then(loadStats).catch(()=>{});
+apiGet('/api/transcribe/check').then(r=>{ state.whisper=r; if(state.currentId) selectFile(state.currentId); })
+  .catch(()=>{ state.whisper={available:false}; });
+apiGet('/api/ocr/check').then(r=>{ state.ocr=r; }).catch(()=>{ state.ocr={available:false}; });
+</script>
+</body>
+</html>

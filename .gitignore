@@ -1,0 +1,12 @@
+# 运行时生成的数据库与缓存
+file_index.db
+*.db
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 操作系统/编辑器临时文件
+.DS_Store
+Thumbs.db
+*.swp
