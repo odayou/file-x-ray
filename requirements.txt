@@ -4,3 +4,5 @@ faster-whisper>=1.0
 pymupdf>=1.24
 pytesseract>=0.3.10
 pillow>=10.0
+typing_extensions~=4.14.0
+tesseract>=0.1.3

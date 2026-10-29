@@ -16,9 +16,10 @@ pip install -r requirements.txt
 ```
 
 **额外系统依赖（OCR 用）**：
+
 - **推荐（中文识别更强）**：安装 [Umi-OCR](https://github.com/hiroi-sora/Umi-OCR)，启动其「HTTP 接口」后本工具会自动优先调用它。
 - **轻量兜底**：安装系统 `tesseract`（含中文包 `chi_sim`）。
-  - Windows：`pip install tesseract` 不行，需到 UB-Mannheim 下载安装，并把 `tesseract.exe` 所在目录加入 PATH；中文包随安装勾选或单独下载 `chi_sim.traineddata` 放到 tessdata 目录。
+  - Windows：`pip install tesseract` 不行，需到 [UB-Mannheim](https://github.com/UB-Mannheim/tesseract/wiki) 下载安装，并把 `tesseract.exe` 所在目录加入 PATH；中文包随安装勾选或单独下载 `chi_sim.traineddata` 放到 tessdata 目录。
   - Debian/Ubuntu：`sudo apt install tesseract-ocr tesseract-ocr-chi-sim`
   - macOS：`brew install tesseract tesseract-lang`
 
@@ -33,18 +34,18 @@ python backend.py
 
 ### 可选环境变量
 
-| 变量 | 默认值 | 说明 |
-|---|---|---|
-| `FIT_DB` | `file_index.db`（打包后为 `~/file_index_data/file_index.db`） | 数据库文件路径 |
-| `FIT_HOST` / `FIT_PORT` | `127.0.0.1` / `8000` | 监听地址与端口 |
-| `FIT_WHISPER_MODEL` | `base` | 转写模型：`tiny`/`base`/`small`/`medium`/`large-v3`（越大越准越慢） |
-| `FIT_WHISPER_LANG` | 空（自动检测） | 固定语种可填 `zh` / `en` 等，提升准确率 |
-| `FIT_TRANSCRIBE_MAX_MB` | `300` | 超过此大小的音视频文件跳过转写，避免卡死 |
-| `FIT_OCR_ENGINE` | `auto` | OCR 引擎：`auto`（优先 Umi-OCR，失败回退 tesseract）/ `umi` / `tesseract` |
-| `FIT_UMI_OCR_URL` | `http://127.0.0.1:1224` | Umi-OCR 的 HTTP 接口地址 |
-| `FIT_OCR_LANGS` | `chi_sim+eng` | tesseract 语言（多语言用 `+` 连接） |
-| `FIT_OCR_MAX_MB` | `30` | 超过此大小的图片跳过 OCR |
-| `PDF_TEXT_LIMIT` | `200000` | 单个 PDF 抽取文字上限（字符） |
+| 变量                        | 默认值                                                            | 说明                                                                            |
+| --------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `FIT_DB`                  | `file_index.db`（打包后为 `~/file_index_data/file_index.db`） | 数据库文件路径                                                                  |
+| `FIT_HOST` / `FIT_PORT` | `127.0.0.1` / `8000`                                          | 监听地址与端口                                                                  |
+| `FIT_WHISPER_MODEL`       | `base`                                                          | 转写模型：`tiny`/`base`/`small`/`medium`/`large-v3`（越大越准越慢）   |
+| `FIT_WHISPER_LANG`        | 空（自动检测）                                                    | 固定语种可填 `zh` / `en` 等，提升准确率                                     |
+| `FIT_TRANSCRIBE_MAX_MB`   | `300`                                                           | 超过此大小的音视频文件跳过转写，避免卡死                                        |
+| `FIT_OCR_ENGINE`          | `auto`                                                          | OCR 引擎：`auto`（优先 Umi-OCR，失败回退 tesseract）/ `umi` / `tesseract` |
+| `FIT_UMI_OCR_URL`         | `http://127.0.0.1:1224`                                         | Umi-OCR 的 HTTP 接口地址                                                        |
+| `FIT_OCR_LANGS`           | `chi_sim+eng`                                                   | tesseract 语言（多语言用 `+` 连接）                                           |
+| `FIT_OCR_MAX_MB`          | `30`                                                            | 超过此大小的图片跳过 OCR                                                        |
+| `PDF_TEXT_LIMIT`          | `200000`                                                        | 单个 PDF 抽取文字上限（字符）                                                   |
 
 ## 界面与功能
 
@@ -62,24 +63,25 @@ python backend.py
 
 ### 功能对照
 
-| 诉求 | 实现 |
-|---|---|
-| 递归扫描建索引 | 后端 `os.walk` 递归入库，重扫不会覆盖已有备注/状态/标签/转写稿/OCR 结果 |
-| 层级可设置 | 扫描时填「扫描最大层级」控下钻深度；左栏「显示层级」控树折叠 |
-| 每个文件备注 + 状态 + 主题标签 | 右栏编辑 `note` / `status` / `tags`；标签可多值，对应"按主题查" |
-| **可自定义状态** | 工具栏「⚙ 管理状态」可增删状态并配色，持久化到数据库 |
-| **语音 / 视频转写** | 右栏「🎙 转写此文件」或工具栏「🎙 转写选中」；基于 faster-whisper |
-| **图片 OCR 文字识别** | 右栏「🖼 识别图中文字」或工具栏「🖼 识别选中图片」；Umi-OCR 优先、tesseract 兜底 |
-| **PDF 文字提取** | 扫描时自动抽取 PDF 内部文字写入索引，右栏可直接查看/复制，可被搜索 |
-| 按文字/标签/转写/图中文字搜索 | 同时匹配 `name / note / content / tags / transcript / ext`，可叠加状态、类型、目录、标签过滤 |
-| 快速预览 | 图片/视频/音频用原生播放器，PDF 内嵌阅读器，文本直接显示正文 |
-| 打开所在文件夹 | 后端调系统命令：Windows `explorer /select,"路径"`、macOS `open -R`、Linux `xdg-open` |
+| 诉求                                       | 实现                                                                                                                                                       |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 递归扫描建索引                             | 后端 `os.walk` 递归入库，重扫不会覆盖已有备注/状态/标签/转写稿/OCR 结果                                                                                  |
+| 层级可设置                                 | 扫描时填「扫描最大层级」控下钻深度；左栏「显示层级」控树折叠                                                                                               |
+| 每个文件备注 + 状态 + 主题标签             | 右栏编辑 `note` / `status` / `tags`；标签可多值，对应"按主题查"                                                                                      |
+| **可自定义状态**                     | 工具栏「⚙ 管理状态」可增删状态并配色，持久化到数据库                                                                                                      |
+| **语音 / 视频转写**                  | 右栏「🎙 转写此文件」或工具栏「🎙 转写选中」；基于 faster-whisper                                                                                          |
+| **图片 OCR 文字识别**                | 右栏「🖼 识别图中文字」或工具栏「🖼 识别选中图片」；Umi-OCR 优先、tesseract 兜底                                                                           |
+| **PDF 文字提取**                     | 扫描时自动抽取 PDF 内部文字写入索引，右栏可直接查看/复制，可被搜索                                                                                         |
+| 按文字/标签/转写/图中文字搜索              | 同时匹配 `name / note / content / tags / transcript / ext`，可叠加状态、类型、目录、标签过滤                                                             |
+| 快速预览                                   | 图片/视频/音频用原生播放器，PDF 内嵌阅读器，文本直接显示正文                                                                                               |
+| 打开所在文件夹                             | 后端调系统命令：Windows `explorer /select,"路径"`、macOS `open -R`、Linux `xdg-open`                                                                 |
 | 全选/勾选 → 按原结构打包 + 带走全部元数据 | 导出 zip 保留 `rel_path` 目录树；根目录附 `manifest.json/csv`（含备注/标签/转写稿/OCR 文字/PDF 正文）；可选为每个文件生成 `.文件名.note.json` 副文件 |
-| 搜索任务清单 + 重试 | 每次搜索自动入库为任务，右侧面板可看结果数、一键重试或应用 |
+| 搜索任务清单 + 重试                        | 每次搜索自动入库为任务，右侧面板可看结果数、一键重试或应用                                                                                                 |
 
 ## 图片 OCR 与 PDF 文字提取
 
 ### 图片 OCR（图中文字 → 可搜索）
+
 - **引擎优先级**：默认 `auto`——先尝试本机已启动的 **Umi-OCR HTTP 接口**（中文识别更强、开箱即用），不可用时自动回退到本地 **tesseract**。可用 `FIT_OCR_ENGINE=umi` / `tesseract` 强制指定。
 - **Umi-OCR 接入**：下载运行 [Umi-OCR](https://github.com/hiroi-sora/Umi-OCR)，在「全局设置 → 开启 HTTP 服务」后，本工具即可通过 `http://127.0.0.1:1224/api/ocr` 调用；语言由 `FIT_OCR_LANGS` 映射（如 `chi_sim+eng` → `ch_and_en`）。
 - **tesseract 兜底**：需系统安装 tesseract 及 `chi_sim`（中文）语言包（见上方安装说明）。
@@ -87,6 +89,7 @@ python backend.py
 - 识别结果写入索引中的 `transcript` 字段，之后按图中文字即可搜到该图片；导出时一并带走。
 
 ### PDF 文字提取（内部文字 → 可搜索）
+
 - 扫描时**自动**用 PyMuPDF（回退 pypdf / pdfminer）抽取 PDF 文字层，写入索引的 `content` 字段，无需手动操作。
 - 右栏对 PDF 直接展示「PDF 文字内容」可读/可复制；搜索时按正文命中。
 - 纯图片型扫描件（无文字层）不会被抽出文字——此类 PDF 可先转成图片再用上方 OCR 处理，或后续接入扫描件 OCR。
