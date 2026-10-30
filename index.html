@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>文件索引与管理工具</title>
+<script>window.__FIT_AUTH_TOKEN__ = "FIT_TOKEN_PLACEHOLDER";</script>
 <style>
   :root {
     --bg: #f4f6f9; --panel: #ffffff; --border: #e3e8ef; --text: #1f2937;
@@ -101,14 +102,36 @@
   /* 转写 */
   .transcript-block { margin: 8px 0; }
   #transcriptView { width:100%; min-height:120px; background:#f8fafc; border:1px solid var(--border); border-radius:6px; padding:8px; font-size:12px; color:var(--text); resize:vertical; font-family:inherit; }
+  /* 待确认的识别结果：黄色警示，需人工采用后才覆盖正式内容 */
+  .pending-block { margin:10px 0; padding:10px; border:1px solid #f59e0b; border-radius:8px; background:#fffbeb; }
+  .pending-block .meta-row b { color:#b45309; }
+  #pendingView { width:100%; min-height:110px; background:#fff; border:1px solid #fcd34d; border-radius:6px; padding:8px; font-size:12px; color:var(--text); resize:vertical; font-family:inherit; }
+  .pending-tip { font-size:11px; color:#92610a; margin:6px 0 0; line-height:1.5; }
+  .badge-pending { background:#f59e0b; color:#fff; font-size:10px; padding:1px 5px; border-radius:8px; margin-left:5px; }
+  .root-dead { color:#dc2626; }
+  .btn-warn { background:#f59e0b; color:#fff; border:0; padding:3px 8px; border-radius:5px; font-size:11px; cursor:pointer; }
   #transcribeOverlay { position: fixed; inset:0; background: rgba(15,23,42,.5); display:none; align-items:center; justify-content:center; z-index:130; }
   #transcribeOverlay.show { display:flex; }
   .tr-box { background:#fff; border-radius:10px; padding:24px 32px; text-align:center; min-width:320px; }
   .tr-box .num { font-size:22px; font-weight:700; color:var(--primary); margin-top:8px; }
   .tr-box .cur { color:var(--muted); font-size:12px; margin-top:8px; word-break:break-all; }
-  /* 状态管理弹窗 */
-  #statusModal { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: none; align-items: center; justify-content: center; z-index: 120; }
-  #statusModal.show { display: flex; }
+  /* 通用弹窗遮罩（状态管理 / 目录选择 / 批量编辑 / 项目编辑） */
+  #statusModal, #dirModal, #batchModal, #projModal { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: none; align-items: center; justify-content: center; z-index: 120; }
+  #statusModal.show, #dirModal.show, #batchModal.show, #projModal.show { display: flex; }
+  /* 项目面板 */
+  #projPanel { position: fixed; right: 0; top: 0; width: 420px; max-width: 94vw; height: 100vh; background: var(--panel);
+               border-left: 1px solid var(--border); box-shadow: -2px 0 8px rgba(0,0,0,.1); transform: translateX(100%);
+               transition: transform .2s; z-index: 50; display: flex; flex-direction: column; }
+  #projPanel.open { transform: translateX(0); }
+  #projPanel .head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  #projPanel .head h3 { margin: 0; font-size: 14px; }
+  .proj-item { border-bottom: 1px solid var(--border); padding: 10px 14px; }
+  .proj-item.active { background: rgba(56,189,248,.08); }
+  .proj-item .nm { font-weight: 600; }
+  .proj-item .meta { font-size: 11px; color: var(--muted); margin: 4px 0; word-break: break-all; }
+  .proj-item .acts { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+  .root-row { display: flex; gap: 6px; margin: 4px 0; align-items: center; }
+  .root-row input { flex: 1; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; }
   .modal-box { background: #fff; border-radius: 10px; padding: 20px 24px; width: 420px; max-width: 92vw; }
   .modal-box h3 { margin: 0 0 12px; font-size: 15px; }
   .st-row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
@@ -121,12 +144,17 @@
 <header>
   <h1>📁 文件索引与管理工具</h1>
   <input id="rootPath" placeholder="根目录路径，如 D:\MyFiles 或 /home/user/files" />
+  <button class="btn-ghost" id="pickDirBtn" title="点击选择根目录">📂 选择</button>
   <input id="maxDepth" type="number" min="0" placeholder="层级" title="扫描最大层级，0=仅根目录文件，留空=不限" />
   <button class="btn-primary" id="scanBtn">扫描建索引</button>
   <div id="stats"></div>
 </header>
 
 <div class="toolbar">
+  <select id="projectSel" title="项目 = 文件的自由组合（一组根目录）。切换后立即生效，无需重新扫描"
+          style="min-width:150px;max-width:220px"></select>
+  <button class="btn-ghost btn-sm" id="projMgrBtn" title="新建 / 改名 / 改目录 / 删除 / 重扫项目">📁 管理项目</button>
+  <span style="color:var(--border)">│</span>
   <input id="searchInput" placeholder="搜索 文件名 / 备注 / 内容 / 标签 / 转写文字 / 图中文字" />
   <button class="btn-primary btn-sm" id="searchBtn">搜索</button>
   <select id="statusFilter"><option value="all">全部状态</option></select>
@@ -134,11 +162,15 @@
   <span id="folderCrumb">位置：<b data-folder="">全部</b></span>
   <span id="tagFilter"></span>
   <div class="spacer"></div>
+  <button class="btn-ghost btn-sm" id="missingBtn" title="默认隐藏磁盘上已删除的文件；点击可显示（便于找回其备注）">👻 显示已失效</button>
+  <button class="btn-ghost btn-sm" id="watchBtn" title="自动同步新增/修改/删除的文件">👁 实时监听</button>
   <button class="btn-ghost btn-sm" id="statusMgrBtn">⚙ 管理状态</button>
   <button class="btn-ghost btn-sm" id="tasksBtn">📋 任务清单</button>
   <div class="selbar" id="selBar" style="display:none">
     <span id="selCount">已选 0</span>
     <button class="btn-primary btn-sm" id="exportBtn">导出选中</button>
+    <button class="btn-ghost btn-sm" id="batchEditBtn">✏️ 批量编辑</button>
+    <button class="btn-ghost btn-sm" id="reportBtn">📄 导出报告</button>
     <button class="btn-ghost btn-sm" id="transcribeSelBtn">🎙 转写选中</button>
     <button class="btn-ghost btn-sm" id="ocrSelBtn">🖼 识别选中图片</button>
     <button class="btn-ghost btn-sm" id="clearSelBtn">清空</button>
@@ -206,6 +238,81 @@
   </div>
 </div></div>
 
+<!-- 目录选择弹窗 -->
+<div id="dirModal"><div class="modal-box" style="width:540px">
+  <h3>📂 选择根目录</h3>
+  <div id="dirQuick" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
+  <div id="dirList" style="max-height:300px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:4px"></div>
+  <div class="meta-row" style="margin-top:10px;word-break:break-all">当前：<b id="dirCurrent"></b></div>
+  <div class="modal-actions">
+    <button class="btn-ghost btn-sm" id="dirUpBtn">⬆ 上级</button>
+    <button class="btn-ghost btn-sm" id="cancelDir">取消</button>
+    <button class="btn-primary btn-sm" id="okDirBtn">选择此目录</button>
+  </div>
+</div></div>
+
+<!-- 批量编辑弹窗 -->
+<div id="batchModal"><div class="modal-box">
+  <h3>✏️ 批量编辑（已选 <span id="batchCount">0</span> 个文件）</h3>
+  <label class="fld">状态（留空 = 不修改）</label>
+  <select id="batchStatus" class="status-sel"><option value="">— 不修改 —</option></select>
+  <label class="fld">标签处理</label>
+  <select id="batchTagsMode" class="status-sel">
+    <option value="append">追加标签</option>
+    <option value="replace">覆盖为下方标签</option>
+    <option value="remove">删除下方标签</option>
+  </select>
+  <input id="batchTags" type="text" placeholder="多个标签用逗号分隔，如：重要,待翻译"
+         style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;margin-top:6px" />
+  <label class="fld">备注处理</label>
+  <select id="batchNoteMode" class="status-sel">
+    <option value="replace">覆盖为下方备注</option>
+    <option value="append">追加到原备注之后</option>
+  </select>
+  <textarea id="batchNote" placeholder="留空 = 不修改备注"></textarea>
+  <div class="modal-actions">
+    <button class="btn-ghost btn-sm" id="cancelBatch">取消</button>
+    <button class="btn-primary btn-sm" id="saveBatch">应用</button>
+  </div>
+</div></div>
+
+<!-- 项目面板（右侧滑出） -->
+<div id="projPanel">
+  <div class="head">
+    <h3>📁 项目（文件的自由组合）</h3>
+    <div style="display:flex;gap:8px">
+      <button class="btn-primary btn-sm" id="newProjBtn">＋ 新建</button>
+      <button class="btn-ghost btn-sm" id="closeProj">关闭</button>
+    </div>
+  </div>
+  <div id="projList" style="overflow:auto;flex:1"></div>
+  <div style="padding:10px 14px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);line-height:1.7">
+    项目只是一组根目录的「视图」，不复制文件。<br>
+    根目录相同的扫描会复用同一个项目，不会堆出重复记录。<br>
+    文件实体只有一份，备注 / 状态 / 标签跨项目复用，项目之间可任意交叉。
+  </div>
+</div>
+
+<!-- 项目编辑弹窗 -->
+<div id="projModal"><div class="modal-box" style="width:480px">
+  <h3 id="projEditTitle">新建项目</h3>
+  <label class="fld">项目名称</label>
+  <input id="projName" placeholder="如：客户A资料"
+         style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px" />
+  <label class="fld">根目录（可添加多个；已索引的文件即时可见，无需重扫）</label>
+  <div id="projRoots"></div>
+  <button class="btn-ghost btn-sm" id="addProjRoot">＋ 添加目录</button>
+  <label class="fld">扫描层级（留空 = 不限）</label>
+  <input id="projDepth" placeholder="如 3"
+         style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px" />
+  <label class="fld">备注</label>
+  <textarea id="projNote" style="min-height:50px"></textarea>
+  <div class="modal-actions">
+    <button class="btn-ghost btn-sm" id="cancelProjEdit">取消</button>
+    <button class="btn-primary btn-sm" id="saveProj">保存</button>
+  </div>
+</div></div>
+
 <!-- 扫描进度 -->
 <div id="scanOverlay"><div class="scan-box">
   <div>正在扫描并建立索引…</div>
@@ -230,8 +337,22 @@
 <div id="toast"></div>
 
 <script>
+// 全局 fetch 包装：对所有 /api/ 请求自动附带本地访问令牌（后端启动后注入）
+(function(){
+  var T = window.__FIT_AUTH_TOKEN__ || "";
+  var _fetch = window.fetch.bind(window);
+  window.fetch = function(url, opts){
+    opts = opts || {};
+    if (typeof url === "string" && url.indexOf("/api/") === 0) {
+      opts.headers = Object.assign({}, opts.headers, {"X-Fit-Token": T});
+    }
+    return _fetch(url, opts);
+  };
+})();
+
 const state = { search:"", status:"all", ext:"", folder:"", tag:"", page:1, pageSize:100, sort:"name",
-                selection:new Set(), currentId:null, statuses:[], whisper:null, ocr:null };
+                selection:new Set(), currentId:null, statuses:[], whisper:null, ocr:null,
+                project:0, projects:[], showMissing:false };
 let treeData = [];
 
 function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'),2200); }
@@ -242,6 +363,7 @@ function statusColor(label){ const s=state.statuses.find(x=>x.label===label); re
 
 async function api(url, opts){ const r=await fetch(url, Object.assign({headers:{'Content-Type':'application/json'}}, opts)); if(!r.ok){ let m=''; try{m=(await r.json()).detail}catch(e){} throw new Error(m||('请求失败 '+r.status)); } return r.json(); }
 const apiGet=u=>api(u); const apiPost=(u,b)=>api(u,{method:'POST',body:JSON.stringify(b||{})}); const apiPut=(u,b)=>api(u,{method:'PUT',body:JSON.stringify(b||{})});
+const apiDelete=u=>api(u,{method:'DELETE'});
 
 // ---------- 状态（自定义） ----------
 async function loadStatuses(){
@@ -255,26 +377,35 @@ async function doScan(){
   const root=document.getElementById('rootPath').value.trim();
   if(!root){ toast('请先填写根目录'); return; }
   const md=document.getElementById('maxDepth').value.trim();
-  let sid;
-  try{ const r=await apiPost('/api/scan',{root, max_depth: md===''?null:md}); sid=r.scan_id; }
+  let sid, pid=null;
+  // 未切换项目时，后端会按根目录自动复用或新建项目
+  try{ const r=await apiPost('/api/scan',{root, max_depth: md===''?null:md, project_id: state.project}); sid=r.scan_id; pid=r.project_id; }
   catch(e){ toast('扫描启动失败: '+e.message); return; }
   document.getElementById('scanOverlay').classList.add('show');
   document.getElementById('scanRoot').textContent=root;
-  pollScan(sid);
+  await pollScan(sid);
+  await loadProjects();
+  if(pid && state.project!==pid){ state.project=pid; renderProjectSel(); }
 }
 async function pollScan(sid){
-  const r=await apiGet('/api/scan/'+sid);
-  document.getElementById('scanNum').textContent=r.processed.toLocaleString();
-  if(!r.done){ setTimeout(()=>pollScan(sid),500); return; }
-  document.getElementById('scanOverlay').classList.remove('show');
-  if(r.error){ toast('扫描出错: '+r.error); return; }
-  toast('扫描完成，共 '+r.processed.toLocaleString()+' 个文件');
-  await loadStats(); await loadTree(); await loadTags(); await loadFiles();
+  // 轮询直到扫描结束（await 到底，便于调用方在完成后刷新项目列表）
+  for(;;){
+    let r;
+    try{ r=await apiGet('/api/scan/'+sid); }
+    catch(e){ document.getElementById('scanOverlay').classList.remove('show'); toast('扫描状态读取失败: '+e.message); return; }
+    document.getElementById('scanNum').textContent=r.processed.toLocaleString();
+    if(!r.done){ await new Promise(res=>setTimeout(res,500)); continue; }
+    document.getElementById('scanOverlay').classList.remove('show');
+    if(r.error){ toast('扫描出错: '+r.error); return; }
+    toast('扫描完成，共 '+r.processed.toLocaleString()+' 个文件');
+    await loadStats(); await loadTree(); await loadTags(); await loadFiles();
+    return;
+  }
 }
 
 // ---------- 统计 ----------
 async function loadStats(){
-  const r=await apiGet('/api/stats');
+  const r=await apiGet('/api/stats?project='+state.project);
   let s=''; for(const k in r.by_status){ s+=`<span style="color:${statusColor(k)}">●</span>${k}:<b>${r.by_status[k]}</b> `; }
   document.getElementById('stats').innerHTML=`总 <b>${r.total.toLocaleString()}</b> ｜ 已打标签 <b>${r.tagged}</b> ｜ 已转写 <b>${r.transcribed||0}</b> ｜ 已识别图片 <b>${r.ocr_count||0}</b> ${s}`;
 }
@@ -282,7 +413,7 @@ async function loadStats(){
 // ---------- 文件夹树 ----------
 async function loadTree(){
   const d=document.getElementById('treeDepth').value;
-  const r=await apiGet('/api/tree?depth='+d);
+  const r=await apiGet('/api/tree?depth='+d+'&project='+state.project);
   treeData=r.folders||[]; renderTree();
 }
 function renderTree(){
@@ -300,7 +431,7 @@ function renderTree(){
 
 // ---------- 标签云 ----------
 async function loadTags(){
-  const r=await apiGet('/api/tags');
+  const r=await apiGet('/api/tags?project='+state.project);
   const el=document.getElementById('tagCloud');
   if(!r.tags.length){ el.innerHTML='<div class="empty" style="padding:10px">暂无标签</div>'; return; }
   el.innerHTML=r.tags.map(t=>{
@@ -322,7 +453,8 @@ function renderTagFilter(){
 // ---------- 文件清单 ----------
 async function loadFiles(){
   const p=new URLSearchParams({ search:state.search, status:state.status, ext:state.ext,
-    folder:state.folder, tag:state.tag, page:state.page, page_size:state.pageSize, sort:state.sort });
+    folder:state.folder, tag:state.tag, page:state.page, page_size:state.pageSize, sort:state.sort,
+    project:state.project, show_missing:state.showMissing?1:0 });
   const r=await apiGet('/api/files?'+p.toString());
   renderList(r);
 }
@@ -346,22 +478,35 @@ function mediaBlock(d){
       <div class="meta-row"><b>图中文字</b><span>${d.transcript?('已识别文字稿'+(d.transcribed_at?' · '+fmtDate(d.transcribed_at):'')):'尚未识别'+(d.can_ocr?'（可点击下方按钮）':'（当前环境未启用 OCR）')}</span></div>
       <textarea id="transcriptView" readonly placeholder="点击下方“识别图中文字”生成可搜索的文字稿（支持中文）">${esc(d.transcript||'')}</textarea>
       <div class="detail-actions">
-        ${d.can_ocr?'<button class="btn-primary btn-sm" id="ocrBtn">🖼 识别图中文字</button>':''}
+        ${d.can_ocr?`<button class="btn-primary btn-sm" id="ocrBtn">🖼 ${d.transcript?"重新识别":"识别图中文字"}</button>`:''}
         ${d.transcript?'<button class="btn-ghost btn-sm" id="copyTranscript">复制文字稿</button>':''}
       </div>
-    </div>`;
+    </div>`+pendingBlock(d);
   }
   if(d.category==='audio'||d.category==='video'){
     return `<div class="transcript-block">
       <div class="meta-row"><b>转写</b><span>${d.transcript?('已生成文字稿'+(d.transcribed_at?' · '+fmtDate(d.transcribed_at):'')):'尚未转写'}</span></div>
       <textarea id="transcriptView" readonly placeholder="点击下方“转写此文件”生成可搜索的文字稿">${esc(d.transcript||'')}</textarea>
       <div class="detail-actions">
-        ${d.can_transcribe?'<button class="btn-primary btn-sm" id="transcribeBtn">🎙 转写此文件</button>':''}
+        ${d.can_transcribe?`<button class="btn-primary btn-sm" id="transcribeBtn">🎙 ${d.transcript?"重新转写":"转写此文件"}</button>`:''}
         ${d.transcript?'<button class="btn-ghost btn-sm" id="copyTranscript">复制文字稿</button>':''}
       </div>
-    </div>`;
+    </div>`+pendingBlock(d);
   }
   return '';
+}
+function pendingBlock(d){
+  if(!d.pending_kind) return '';
+  const label = d.pending_kind==='ocr' ? '新识别的文字' : '新转写的文字';
+  return `<div class="pending-block">
+    <div class="meta-row"><b>⚠ ${label}（待确认）</b><span>采用后才会覆盖上方正式内容</span></div>
+    <textarea id="pendingView" placeholder="可在此直接修改，再点采用">${esc(d.pending_text||'')}</textarea>
+    <div class="detail-actions">
+      <button class="btn-primary btn-sm" id="acceptText">✓ 采用此版本</button>
+      <button class="btn-ghost btn-sm" id="discardText">✗ 丢弃</button>
+    </div>
+    <p class="pending-tip">上方是目前生效的正式内容。新结果先进这里等你确认，不采用就不会动正式内容。</p>
+  </div>`;
 }
 function renderList(r){
   const tb=document.getElementById('fileRows');
@@ -375,7 +520,7 @@ function renderList(r){
       const tags=tagChipsHtml(it.tags);
       return `<tr class="row ${sel} ${act}" data-id="${it.id}" data-path="${esc(it.path)}">
         <td><input type="checkbox" class="rowchk" ${state.selection.has(it.id)?'checked':''}></td>
-        <td class="name-cell">${esc(it.name)}</td>
+        <td class="name-cell">${esc(it.name)}${it.pending_kind?'<span class="badge-pending">待确认</span>':''}</td>
         <td class="type-ic">${esc(it.ext||'')}</td>
         <td>${humanSize(it.size)}</td>
         <td class="type-ic">${fmtDate(it.mtime)}</td>
@@ -460,6 +605,18 @@ function renderDetail(d){
   if(ocrBtn) ocrBtn.onclick=()=>startOcr([d.id]);
   const cpBtn=document.getElementById('copyTranscript');
   if(cpBtn) cpBtn.onclick=()=>{ const t=document.getElementById('transcriptView').value; navigator.clipboard.writeText(t).then(()=>toast('已复制文字稿')).catch(()=>toast('复制失败，请手动选择')); };
+  const accBtn=document.getElementById('acceptText');
+  if(accBtn) accBtn.onclick=async()=>{
+    try{ await apiPost('/api/file/'+d.id+'/text',{action:'accept',text:document.getElementById('pendingView').value});
+      toast('已采用新版本'); await selectFile(d.id, d.path); loadFiles(); }
+    catch(e){ toast('采用失败: '+e.message); }
+  };
+  const disBtn=document.getElementById('discardText');
+  if(disBtn) disBtn.onclick=async()=>{
+    try{ await apiPost('/api/file/'+d.id+'/text',{action:'discard'});
+      toast('已丢弃暂存内容，正式内容未改动'); await selectFile(d.id, d.path); loadFiles(); }
+    catch(e){ toast('丢弃失败: '+e.message); }
+  };
   // 标签删除
   document.querySelectorAll('#detailTags .tg [data-x]').forEach(x=>x.onclick=()=>{ x.parentElement.remove(); });
   // 标签添加
@@ -483,7 +640,7 @@ function runSearch(){
   loadFiles(); saveTask();
 }
 async function saveTask(){
-  try{ await apiPost('/api/tasks',{query:state.search,status_filter:state.status,ext_filter:state.ext,folder_filter:state.folder,tag_filter:state.tag}); }
+  try{ await apiPost('/api/tasks',{query:state.search,status_filter:state.status,ext_filter:state.ext,folder_filter:state.folder,tag_filter:state.tag,project_id:state.project}); }
   catch(e){ /* 非致命 */ }
 }
 function updateCrumb(){
@@ -497,13 +654,206 @@ function updateCrumb(){
   cr.querySelectorAll('b').forEach(b=>b.onclick=()=>{ state.folder=b.dataset.folder||''; state.page=1; renderTree(); updateCrumb(); loadFiles(); });
 }
 
+// ---------- 项目（文件的自由组合 / 虚拟视图） ----------
+async function loadProjects(){
+  try{ const r=await apiGet('/api/projects'); state.projects=r.projects||[]; }
+  catch(e){ state.projects=[]; }
+  renderProjectSel();
+  if(document.getElementById('projPanel').classList.contains('open')) renderProjList();
+}
+
+function projName(pid){
+  const p=state.projects.find(x=>x.id===(pid||0));
+  return p?p.name:'全部文件';
+}
+
+function renderProjectSel(){
+  const el=document.getElementById('projectSel');
+  // 项目被删除后自动回落到“全部文件”
+  if(state.project && !state.projects.some(p=>p.id===state.project)) state.project=0;
+  el.innerHTML='<option value="0">📁 全部文件</option>'+
+    state.projects.map(p=>`<option value="${p.id}">${esc(p.name)}（${p.file_count}）</option>`).join('');
+  el.value=String(state.project);
+}
+
+function switchProject(pid){
+  pid=parseInt(pid||0,10)||0;
+  state.project=pid;
+  state.page=1; state.folder=''; state.tag='';
+  state.selection.clear(); state.currentId=null;
+  updateSelBar(); renderProjectSel(); updateCrumb();
+  if(document.getElementById('projPanel').classList.contains('open')) renderProjList();
+  loadStats(); loadTree(); loadTags(); loadFiles();
+}
+
+function renderProjList(){
+  const el=document.getElementById('projList');
+  if(!state.projects.length){
+    el.innerHTML='<div class="empty">还没有项目<br>扫描任意目录会自动创建一个<br>也可以点「＋ 新建」直接建立</div>';
+    return;
+  }
+  el.innerHTML=state.projects.map(p=>{
+    const roots=p.roots||[];
+    const infos=p.roots_info||[];
+    const rootHtml=roots.length
+      ? roots.map((r,i)=>{
+          const dead=infos[i] && infos[i].exists===false;
+          return `<div class="meta">📂 ${esc(r)}${dead?' <span class="root-dead">（已失效：目录被改名或移动过）</span>':''}`
+            + (dead?` <button class="btn-warn" data-act="relocate" data-id="${p.id}" data-root="${esc(r)}">📍 重新定位</button>`:'')
+            + `</div>`;
+        }).join('')
+      : '<div class="meta">📂 不限制目录（全部文件）</div>';
+    return `<div class="proj-item ${p.id===state.project?'active':''}">
+      <div class="nm">${esc(p.name)}
+        <span style="font-weight:400;color:var(--muted)">${p.file_count} 个文件${p.missing_count?'（'+p.missing_count+' 个已失效）':''}</span></div>
+      ${rootHtml}
+      <div class="meta">最近扫描：${esc(p.last_scan_at?fmtDate(p.last_scan_at):'尚未扫描')}${p.note?' ｜ '+esc(p.note):''}</div>
+      <div class="acts">
+        <button class="btn-primary btn-sm" data-act="use" data-id="${p.id}">切换到此项目</button>
+        <button class="btn-ghost btn-sm" data-act="scan" data-id="${p.id}">重新扫描</button>
+        <button class="btn-ghost btn-sm" data-act="edit" data-id="${p.id}">改名 / 改目录</button>
+        <button class="btn-ghost btn-sm" data-act="del" data-id="${p.id}">删除</button>
+      </div>
+    </div>`;
+  }).join('');
+  el.querySelectorAll('button[data-act]').forEach(b=>{
+    b.onclick=()=>onProjAction(b.dataset.act, parseInt(b.dataset.id,10), b);
+  });
+}
+
+async function onProjAction(act, id, btn){
+  const p=state.projects.find(x=>x.id===id);
+  if(act==='use'){
+    switchProject(id);
+    document.getElementById('projPanel').classList.remove('open');
+    toast('已切换到项目：'+(p?p.name:''));
+    return;
+  }
+  if(act==='edit'){ openProjEdit(p); return; }
+  if(act==='scan'){
+    if(!p||!(p.roots||[]).length){ toast('该项目未设置根目录，请先编辑'); return; }
+    try{
+      const r=await apiPost('/api/projects/'+id+'/scan');
+      await pollProjectScan(r.scan_ids||[]);
+    }catch(e){ toast('扫描失败: '+e.message); }
+    return;
+  }
+  if(act==='relocate'){
+    relocateRoot(id, btn ? btn.dataset.root : '');
+    return;
+  }
+  if(act==='del'){
+    if(!confirm('删除项目「'+(p?p.name:'')+'」？\n\n只删除这个视图，文件本身以及备注 / 状态 / 标签都会保留。')) return;
+    try{
+      await apiDelete('/api/projects/'+id);
+      toast('项目已删除');
+      if(state.project===id) switchProject(0);
+      await loadProjects();
+    }catch(e){ toast('删除失败: '+e.message); }
+    return;
+  }
+}
+
+// 项目根目录被改名 / 移动后，选新位置把索引整体迁过去（备注/状态/标签/识别结果全保留）
+function relocateRoot(pid, oldRoot){
+  if(!oldRoot){ toast('缺少原路径'); return; }
+  openDirModal(async newRoot=>{
+    if(!newRoot) return;
+    if(newRoot===oldRoot){ toast('新位置与原位置相同'); return; }
+    if(!confirm('把项目根目录\n'+oldRoot+'\n重新定位到\n'+newRoot+' ？\n\n该目录下所有文件的备注 / 状态 / 标签 / 识别结果都会跟着迁过去，不会丢失。')) return;
+    try{
+      const r=await apiPost('/api/projects/'+pid+'/relocate',{old:oldRoot,new:newRoot});
+      toast('已重新定位，迁移了 '+r.moved+' 条记录');
+      await loadProjects(); await loadTree(); await loadFiles(); await loadStats();
+    }catch(e){ toast('重新定位失败: '+e.message); }
+  });
+}
+
+async function pollProjectScan(sids){
+  if(!sids.length){ toast('没有可扫描的目录'); return; }
+  document.getElementById('scanOverlay').classList.add('show');
+  document.getElementById('scanRoot').textContent='正在重新扫描项目…';
+  const pending=new Set(sids);
+  let total=0;
+  while(pending.size){
+    await new Promise(res=>setTimeout(res,500));
+    for(const sid of Array.from(pending)){
+      try{
+        const r=await apiGet('/api/scan/'+sid);
+        if(r.done){ pending.delete(sid); total+=r.processed||0; }
+      }catch(e){ pending.delete(sid); }
+    }
+    document.getElementById('scanNum').textContent=total.toLocaleString();
+  }
+  document.getElementById('scanOverlay').classList.remove('show');
+  toast('项目扫描完成，共 '+total.toLocaleString()+' 个文件');
+  await loadProjects(); await loadStats(); await loadTree(); await loadTags(); await loadFiles();
+}
+
+// ---------- 项目编辑弹窗 ----------
+let projEditingId=null;
+
+function openProjEdit(p){
+  projEditingId=p?p.id:null;
+  document.getElementById('projEditTitle').textContent=p?('编辑项目：'+p.name):'新建项目';
+  document.getElementById('projName').value=p?p.name:'';
+  document.getElementById('projDepth').value=(p&&p.max_depth)?p.max_depth:'';
+  document.getElementById('projNote').value=(p&&p.note)?p.note:'';
+  const roots=(p&&p.roots&&p.roots.length)?p.roots:[];
+  renderProjRoots(roots.length?roots:['']);
+  document.getElementById('projModal').classList.add('show');
+}
+
+function renderProjRoots(roots){
+  const el=document.getElementById('projRoots');
+  el.innerHTML=roots.map((r,i)=>`<div class="root-row">
+    <input data-root="${i}" value="${esc(r)}" placeholder="根目录路径，如 D:\\MyFiles" />
+    <button class="btn-ghost btn-sm" data-pick="${i}">📂</button>
+    <button class="btn-ghost btn-sm" data-rm="${i}">✕</button>
+  </div>`).join('');
+  el.querySelectorAll('[data-rm]').forEach(b=>b.onclick=()=>{
+    const vals=projRootValues(); vals.splice(parseInt(b.dataset.rm,10),1);
+    renderProjRoots(vals.length?vals:['']);
+  });
+  el.querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>{
+    const i=parseInt(b.dataset.pick,10);
+    openDirModal(p=>{ const v=projRootValues(); v[i]=p; renderProjRoots(v); });
+  });
+}
+
+function projRootValues(){
+  return Array.from(document.querySelectorAll('#projRoots input[data-root]'))
+              .map(i=>i.value.trim()).filter(Boolean);
+}
+
+async function saveProj(){
+  const name=document.getElementById('projName').value.trim();
+  const roots=projRootValues();
+  const md=document.getElementById('projDepth').value.trim();
+  const note=document.getElementById('projNote').value.trim();
+  if(!name){ toast('请填写项目名称'); return; }
+  const payload={name, roots, max_depth: md===''?null:(parseInt(md,10)||null), note};
+  try{
+    if(projEditingId) await apiPut('/api/projects/'+projEditingId, payload);
+    else await apiPost('/api/projects', payload);
+    document.getElementById('projModal').classList.remove('show');
+    toast('项目已保存');
+    await loadProjects();
+    if(!projEditingId){                        // 新建后自动切换过去
+      const np=state.projects.find(p=>p.name===name);
+      if(np) switchProject(np.id);
+    }
+  }catch(e){ toast('保存失败: '+e.message); }
+}
+
 // ---------- 任务清单 ----------
 async function loadTasks(){
   const r=await apiGet('/api/tasks');
   const el=document.getElementById('tasksList');
   if(!r.tasks.length){ el.innerHTML='<div class="empty">还没有搜索任务<br>每次搜索会自动记录到这里</div>'; return; }
   el.innerHTML=r.tasks.map(t=>{
-    const flt=[]; if(t.status_filter&&t.status_filter!=='all')flt.push('状态:'+t.status_filter); if(t.ext_filter)flt.push('类型:'+t.ext_filter); if(t.folder_filter)flt.push('目录:'+t.folder_filter); if(t.tag_filter)flt.push('标签:#'+t.tag_filter);
+    const flt=[]; if(t.project_id)flt.push('项目:'+projName(t.project_id));
+    if(t.status_filter&&t.status_filter!=='all')flt.push('状态:'+t.status_filter); if(t.ext_filter)flt.push('类型:'+t.ext_filter); if(t.folder_filter)flt.push('目录:'+t.folder_filter); if(t.tag_filter)flt.push('标签:#'+t.tag_filter);
     return `<div class="task-item">
       <div class="q">${(t.query||'(空查询)')+(t.tag_filter?' #'+esc(t.tag_filter):'')}</div>
       <div class="meta">${flt.join(' · ')||'无附加过滤'} ｜ 结果 <b>${t.result_count}</b> ｜ ${fmtDate(t.last_run)}</div>
@@ -561,7 +911,9 @@ async function pollTranscribe(jid){
   if(!r.finished){ setTimeout(()=>pollTranscribe(jid), 800); return; }
   document.getElementById('transcribeOverlay').classList.remove('show');
   if(r.error){ toast('转写出错: '+r.error); }
+  else if(r.pending){ toast('转写完成：'+r.pending+' 个文件已有旧内容，新结果已放入暂存等你确认'); }
   else { toast('转写完成，共处理 '+r.total+' 个文件'); }
+  if(r.errors && r.errors.length){ toast('有 '+r.errors.length+' 个转写失败（原内容已保留未覆盖）'); }
   if(state.currentId) selectFile(state.currentId);
   await loadStats(); await loadFiles();
 }
@@ -582,7 +934,9 @@ async function pollOcr(jid){
   if(!r.finished){ setTimeout(()=>pollOcr(jid), 800); return; }
   document.getElementById('ocrOverlay').classList.remove('show');
   if(r.error){ toast('识别出错: '+r.error); }
+  else if(r.pending){ toast('识别完成：'+r.pending+' 个文件已有旧内容，新结果已放入暂存等你确认'); }
   else { toast('识别完成，共处理 '+r.total+' 个图片'); }
+  if(r.errors && r.errors.length){ toast('有 '+r.errors.length+' 个识别失败（原内容已保留未覆盖）'); }
   if(state.currentId) selectFile(state.currentId);
   await loadStats(); await loadFiles();
 }
@@ -600,6 +954,108 @@ async function doExport(){
     const blob=await r.blob(); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name+'.zip'; a.click();
     toast('已导出 '+ids.length+' 个文件（含备注清单）');
   }catch(e){ toast('导出失败: '+e.message); }
+}
+
+// ---------- 根目录点击选择 ----------
+let dirCur = "";
+function closeDirModal(){ document.getElementById('dirModal').classList.remove('show'); }
+let dirPickCb=null;                       // 非空的目录选择回调（项目编辑时用）
+function pickDir(p){
+  if(dirPickCb) dirPickCb(p);
+  else document.getElementById('rootPath').value=p;
+  closeDirModal();
+}
+async function openDirModal(onPick){
+  dirPickCb=onPick||null;
+  document.getElementById('dirModal').classList.add('show');
+  try{
+    const q=await apiGet('/api/dirs/quick');
+    const qd=document.getElementById('dirQuick');
+    qd.innerHTML=(q.quick||[]).map(x=>`<button class="btn-ghost btn-sm" data-p="${esc(x.path)}">${esc(x.name)}</button>`).join('')
+      || '<span style="color:var(--muted);font-size:12px">无快捷位置</span>';
+    qd.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>loadDir(b.dataset.p));
+  }catch(e){}
+  await loadDir("");
+}
+async function loadDir(p){
+  try{
+    const r=await apiGet('/api/dirs?path='+encodeURIComponent(p||""));
+    dirCur=r.current||"";
+    document.getElementById('dirCurrent').textContent=dirCur||"（计算机）";
+    const el=document.getElementById('dirList');
+    if(!r.dirs.length){
+      el.innerHTML='<div class="empty" style="padding:14px">没有子文件夹</div>';
+    }else{
+      el.innerHTML=r.dirs.map(d=>`<div class="tree-node" data-p="${esc(d.path)}">📁 ${esc(d.name)}</div>`).join('');
+      el.querySelectorAll('.tree-node').forEach(n=>{
+        n.onclick=()=>loadDir(n.dataset.p);
+        n.ondblclick=()=>pickDir(n.dataset.p);
+      });
+    }
+    document.getElementById('dirUpBtn').onclick=()=>loadDir(r.parent||"");
+  }catch(e){ toast('读取目录失败: '+e.message); }
+}
+
+// ---------- 批量编辑 ----------
+function openBatchModal(){
+  if(!state.selection.size){ toast('请先勾选文件'); return; }
+  document.getElementById('batchCount').textContent=state.selection.size;
+  const sel=document.getElementById('batchStatus');
+  sel.innerHTML='<option value="">— 不修改 —</option>'+
+    state.statuses.map(s=>`<option value="${esc(s.label)}">${esc(s.label)}</option>`).join('');
+  document.getElementById('batchTags').value='';
+  document.getElementById('batchNote').value='';
+  document.getElementById('batchModal').classList.add('show');
+}
+async function saveBatch(){
+  const payload={ ids:Array.from(state.selection),
+    status:document.getElementById('batchStatus').value||'',
+    tags:document.getElementById('batchTags').value,
+    tags_mode:document.getElementById('batchTagsMode').value,
+    note:document.getElementById('batchNote').value,
+    note_mode:document.getElementById('batchNoteMode').value };
+  try{
+    const r=await apiPost('/api/batch', payload);
+    document.getElementById('batchModal').classList.remove('show');
+    toast('已更新 '+r.updated+' 个文件');
+    await loadStats(); await loadTags(); await loadFiles();
+    if(state.currentId) selectFile(state.currentId);
+  }catch(e){ toast('批量更新失败: '+e.message); }
+}
+
+// ---------- 报告导出（CSV / Markdown） ----------
+async function doReport(){
+  if(!state.selection.size){ toast('请先勾选文件'); return; }
+  const fmt=confirm('确定导出 Markdown 报告？\n（点“取消”则导出 CSV）')?'md':'csv';
+  try{
+    const r=await fetch('/api/report',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ids:Array.from(state.selection), format:fmt})});
+    if(!r.ok) throw new Error('导出失败');
+    const blob=await r.blob(); const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob); a.download='file_report.'+fmt; a.click();
+    toast('已导出 '+(fmt==='md'?'Markdown':'CSV')+' 报告');
+  }catch(e){ toast('导出失败: '+e.message); }
+}
+
+// ---------- 目录实时监听 ----------
+async function refreshWatchBtn(){
+  try{
+    const s=await apiGet('/api/watch');
+    const b=document.getElementById('watchBtn');
+    b.textContent = s.enabled ? '👁 监听中（点击停止）' : '👁 实时监听';
+    b.style.background = s.enabled ? '#16a34a' : '';
+    b.style.color = s.enabled ? '#fff' : '';
+    b.title = s.watchdog_installed ? (s.error || '自动同步新增/修改/删除的文件')
+                                   : '未安装 watchdog，请 pip install watchdog';
+  }catch(e){}
+}
+async function toggleWatch(){
+  try{
+    const s=await apiGet('/api/watch');
+    if(s.enabled){ await apiPost('/api/watch',{action:'stop'}); toast('已停止实时监听'); }
+    else{ const r=await apiPost('/api/watch',{action:'start'}); toast('已开启实时监听：'+r.roots.join('、')); }
+    await refreshWatchBtn();
+  }catch(e){ toast('实时监听不可用: '+e.message); }
 }
 
 // ---------- 状态管理弹窗 ----------
@@ -645,6 +1101,14 @@ document.getElementById('nextPage').onclick=()=>{ state.page++; loadFiles(); };
 document.getElementById('tasksBtn').onclick=()=>{ document.getElementById('tasksPanel').classList.toggle('open'); if(document.getElementById('tasksPanel').classList.contains('open')) loadTasks(); };
 document.getElementById('closeTasks').onclick=()=>document.getElementById('tasksPanel').classList.remove('open');
 document.getElementById('exportBtn').onclick=doExport;
+document.getElementById('batchEditBtn').onclick=openBatchModal;
+document.getElementById('saveBatch').onclick=saveBatch;
+document.getElementById('cancelBatch').onclick=()=>document.getElementById('batchModal').classList.remove('show');
+document.getElementById('reportBtn').onclick=doReport;
+document.getElementById('watchBtn').onclick=toggleWatch;
+document.getElementById('pickDirBtn').onclick=openDirModal;
+document.getElementById('cancelDir').onclick=closeDirModal;
+document.getElementById('okDirBtn').onclick=()=>{ if(dirCur) pickDir(dirCur); else closeDirModal(); };
 document.getElementById('clearSelBtn').onclick=()=>{ state.selection.clear(); updateSelBar(); loadFiles(); };
 document.getElementById('transcribeSelBtn').onclick=()=>{
   const ids=Array.from(state.selection);
@@ -656,6 +1120,26 @@ document.getElementById('ocrSelBtn').onclick=()=>{
   if(!ids.length){ toast('请先勾选文件'); return; }
   startOcr(ids);
 };
+// 项目：切换 / 管理面板 / 编辑弹窗
+document.getElementById('projectSel').onchange=e=>switchProject(e.target.value);
+document.getElementById('projMgrBtn').onclick=()=>{
+  const pn=document.getElementById('projPanel');
+  pn.classList.toggle('open');
+  if(pn.classList.contains('open')) loadProjects();
+};
+document.getElementById('missingBtn').onclick=()=>{
+  state.showMissing=!state.showMissing;
+  const b=document.getElementById('missingBtn');
+  b.textContent=state.showMissing?'👻 隐藏已失效':'👻 显示已失效';
+  b.classList.toggle('btn-primary', state.showMissing);
+  state.page=1; loadFiles();
+};
+document.getElementById('closeProj').onclick=()=>document.getElementById('projPanel').classList.remove('open');
+document.getElementById('newProjBtn').onclick=()=>openProjEdit(null);
+document.getElementById('cancelProjEdit').onclick=()=>document.getElementById('projModal').classList.remove('show');
+document.getElementById('addProjRoot').onclick=()=>{ const v=projRootValues(); v.push(''); renderProjRoots(v); };
+document.getElementById('saveProj').onclick=saveProj;
+
 document.getElementById('statusMgrBtn').onclick=openStatusModal;
 document.getElementById('cancelStatus').onclick=()=>document.getElementById('statusModal').classList.remove('show');
 document.getElementById('saveStatus').onclick=saveStatuses;
@@ -669,10 +1153,12 @@ document.getElementById('addStatusRow').onclick=()=>{
 // ---------- 初始化 ----------
 updateCrumb(); renderTagFilter();
 loadStatuses().catch(()=>{});
-apiGet('/api/stats').then(loadStats).catch(()=>{});
+// 先载入项目列表，再按当前项目（默认“全部文件”）载入统计 / 树 / 标签 / 清单
+loadProjects().then(()=>{ loadStats(); loadTree(); loadTags(); loadFiles(); }).catch(()=>{});
 apiGet('/api/transcribe/check').then(r=>{ state.whisper=r; if(state.currentId) selectFile(state.currentId); })
   .catch(()=>{ state.whisper={available:false}; });
 apiGet('/api/ocr/check').then(r=>{ state.ocr=r; }).catch(()=>{ state.ocr={available:false}; });
+refreshWatchBtn();
 </script>
 </body>
 </html>

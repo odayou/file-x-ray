@@ -1,3 +1,8 @@
+# File X-Ray 依赖
+# 说明：版本使用下限约束（>=）。如需完全可复现的部署，建议用 pip-tools 生成锁定文件：
+#   pip install pip-tools && pip-compile requirements.txt
+# 注意：OCR 包装应安装 pytesseract（下方已包含）；不要安装名为 tesseract 的无关 PyPI 包。
+
 fastapi>=0.110
 uvicorn>=0.27
 faster-whisper>=1.0
@@ -5,4 +10,4 @@ pymupdf>=1.24
 pytesseract>=0.3.10
 pillow>=10.0
 typing_extensions~=4.14.0
-tesseract>=0.1.3
+watchdog>=3.0
