@@ -34,7 +34,7 @@ document.addEventListener('keydown',e=>{
   if(document.getElementById('dirModal').classList.contains('show')) return;  // 目录选择器内方向键用于浏览
   navDetail(e.key==='ArrowLeft'?-1:1);
 });
-document.getElementById('treeDepth').onchange=loadTree;
+
 document.getElementById('selectAll').onchange=e=>{
   const chk=e.target.checked;
   document.querySelectorAll('tr.row').forEach(tr=>{ const id=parseInt(tr.dataset.id); if(chk)state.selection.add(id); else state.selection.delete(id); tr.classList.toggle('sel',chk); tr.querySelector('.rowchk').checked=chk; });

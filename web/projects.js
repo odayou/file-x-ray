@@ -177,7 +177,6 @@ function openProjEdit(p){
   projEditingId=p?p.id:null;
   document.getElementById('projEditTitle').textContent=p?('编辑项目：'+p.name):'新建项目';
   document.getElementById('projName').value=p?p.name:'';
-  document.getElementById('projDepth').value=(p&&p.max_depth)?p.max_depth:'';
   document.getElementById('projNote').value=(p&&p.note)?p.note:'';
   const roots=(p&&p.roots&&p.roots.length)?p.roots:[];
   renderProjRoots(roots.length?roots:['']);
@@ -209,12 +208,11 @@ function projRootValues(){
 async function saveProj(){
   const name=document.getElementById('projName').value.trim();
   const roots=projRootValues();
-  const md=document.getElementById('projDepth').value.trim();
   const note=document.getElementById('projNote').value.trim();
   if(!name){ toast('请填写项目名称'); return; }
   const created=!projEditingId;
   const oldP=created?null:state.projects.find(x=>x.id===projEditingId);
-  const payload={name, roots, max_depth: md===''?null:(parseInt(md,10)||null), note};
+  const payload={name, roots, note};
   try{
     if(projEditingId) await apiPut('/api/projects/'+projEditingId, payload);
     else await apiPost('/api/projects', payload);

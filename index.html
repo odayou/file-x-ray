@@ -20,7 +20,6 @@
   header input::placeholder { color: #94a3b8; }
   header select { padding: 6px 8px; border-radius: 6px; border: 1px solid #334155; background: #1e293b; color: #fff; }
   #rootPath { width: 320px; }
-  #maxDepth { width: 70px; }
   button { cursor: pointer; border: none; border-radius: 6px; padding: 6px 12px; font-size: 13px; }
   .btn-primary { background: var(--primary); color: #fff; }
   .btn-primary:hover { background: var(--primary-d); }
@@ -53,6 +52,8 @@
   .tree-node:hover { background: var(--sel); }
   .tree-node.active { background: var(--sel); color: var(--primary); font-weight: 600; }
   .tree-node .cnt { color: var(--muted); font-size: 11px; margin-left: 4px; }
+  .tree-node .tw { display: inline-block; width: 12px; color: var(--muted); cursor: pointer; user-select: none; }
+  .tree-node .tw:empty { cursor: default; }
   .tagcloud { padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 6px; }
   .tagcloud .t { background: #f1f5f9; border: 1px solid var(--border); border-radius: 10px; padding: 2px 8px; font-size: 12px; cursor: pointer; }
   .tagcloud .t:hover { background: var(--sel); }
@@ -229,13 +230,7 @@
 <div class="layout">
   <!-- 左：文件夹树 + 标签云 -->
   <div class="col" id="treeCol">
-    <div class="col-title">文件夹树
-      <select id="treeDepth" style="float:right;font-size:11px;padding:1px">
-        <option value="99">全部层级</option>
-        <option value="1">1 层</option><option value="2">2 层</option>
-        <option value="3">3 层</option><option value="4">4 层</option>
-      </select>
-    </div>
+    <div class="col-title">文件夹树</div>
     <div id="tree"></div>
     <div class="col-title">🏷 主题标签</div>
     <div class="tagcloud" id="tagCloud"><div class="empty" style="padding:10px">暂无标签</div></div>
@@ -360,9 +355,6 @@
   <label class="fld">根目录（可添加多个；已索引的文件即时可见，无需重扫）</label>
   <div id="projRoots"></div>
   <button class="btn-ghost btn-sm" id="addProjRoot">＋ 添加目录</button>
-  <label class="fld">扫描层级（留空 = 不限）</label>
-  <input id="projDepth" placeholder="如 3"
-         style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px" />
   <label class="fld">备注</label>
   <textarea id="projNote" style="min-height:50px"></textarea>
   <div class="modal-actions">

@@ -962,8 +962,11 @@ def _build_where(search, status, ext, folder, tag, force_like=False, scope=None,
         conds.append("ext IN (%s)" % ",".join("?" * len(exts)))
         params += exts
     if folder:
-        conds.append("(parent=? OR rel_path LIKE ? ESCAPE '\\')")
-        params += [folder, folder + "/%"]
+        # 仅展示该文件夹“直接包含”的文件：精确匹配 parent。
+        # 树/UI 传正斜杠路径，库内存贮用 OS 分隔符（Windows 为反斜杠），先归一化
+        fbs = folder.replace("/", os.sep)
+        conds.append("parent=?")
+        params.append(fbs)
     if tag:
         q = "%" + like_escape(tag) + "%"
         conds.append("tags LIKE ? ESCAPE '\\'")
@@ -1355,8 +1358,16 @@ def get_tree(depth: int = 99, project: int = 0):
         rel = rel_for(r["path"], roots)
         if rel is None:
             rel = (r["rel_path"] or "").replace("\\", "/")
-        p = rel.rsplit("/", 1)[0] if "/" in rel else ""
-        folders[p] = folders.get(p, 0) + 1
+        parts = rel.split("/") if rel else []
+        # 注册路径上的每一级祖先目录（含直接父目录）：即便某层目录没有直接文件，
+        # 只要更深层有文件，它也应作为树节点出现，否则层级/缩进会错位
+        for k in range(1, len(parts)):
+            folders.setdefault("/".join(parts[:k]), 0)
+        p = "/".join(parts[:-1]) if len(parts) > 1 else ""
+        if p:
+            folders[p] = folders.get(p, 0) + 1      # 直接父目录累计本层文件数
+        else:
+            folders[""] = folders.get("", 0) + 1     # 根目录下的文件计入根节点
         # 同一条记录的相对目录链与绝对目录链逐级对应，一遍扫描即可建立映射
         ad = os.path.dirname(r["path"])
         rd = p
