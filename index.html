@@ -152,6 +152,17 @@
                border-left: 1px solid var(--border); box-shadow: -2px 0 8px rgba(0,0,0,.1); transform: translateX(100%);
                transition: transform .2s; z-index: 50; display: flex; flex-direction: column; }
   #projPanel.open { transform: translateX(0); }
+  /* 调试日志面板（右侧滑出） */
+  #debugPanel { position: fixed; right: 0; top: 0; width: 460px; max-width: 94vw; height: 100vh; background: var(--panel);
+                border-left: 1px solid var(--border); box-shadow: -2px 0 8px rgba(0,0,0,.1); transform: translateX(100%);
+                transition: transform .2s; z-index: 150; display: flex; flex-direction: column; }
+  #debugPanel.open { transform: translateX(0); }
+  #debugPanel .head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  #debugPanel .head h3 { margin: 0; font-size: 14px; }
+  .log-item { border-bottom: 1px dashed var(--border); padding: 5px 0; font-size: 12px; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-all; user-select: text; cursor: text; }
+  .log-item .log-t { color: var(--muted); font-size: 11px; margin-right: 6px; }
+  .log-item.log-err { color: #dc2626; }
   #projPanel .head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); }
   #projPanel .head h3 { margin: 0; font-size: 14px; }
   .proj-item { border-bottom: 1px solid var(--border); padding: 10px 14px; }
@@ -206,6 +217,7 @@
   <button class="btn-ghost btn-sm" id="watchBtn" title="自动同步新增/修改/删除的文件">👁 实时感知</button>
   <button class="btn-ghost btn-sm" id="statusMgrBtn">⚙ 管理状态</button>
   <button class="btn-ghost btn-sm" id="tasksBtn">📋 任务清单</button>
+  <button class="btn-ghost btn-sm" id="debugBtn" title="历史提示/错误日志，可复制，便于反馈问题">🐞 调试</button>
   <div class="selbar" id="selBar" style="display:none">
     <span id="selCount">已选 0</span>
     <button class="btn-primary btn-sm" id="exportBtn">导出选中</button>
@@ -373,6 +385,22 @@
   <div class="num" id="ocrNum">0 / 0</div>
   <div class="cur" id="ocrCur"></div>
 </div></div>
+
+<!-- 调试日志面板（右侧滑出）：累加记录所有提示/错误，可复制 -->
+<div id="debugPanel">
+  <div class="head">
+    <h3>🐞 调试日志</h3>
+    <div style="display:flex;gap:8px">
+      <button class="btn-primary btn-sm" id="copyDebugLog">复制全部</button>
+      <button class="btn-ghost btn-sm" id="clearDebugLog">清空</button>
+      <button class="btn-ghost btn-sm" id="closeDebug">关闭</button>
+    </div>
+  </div>
+  <div id="debugLog" style="flex:1;overflow:auto;padding:8px 14px"></div>
+  <div style="padding:8px 14px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);line-height:1.7">
+    记录页面内所有提示与错误信息（最多 500 条）。内容可直接选中复制，或点“复制全部”后粘贴反馈。
+  </div>
+</div>
 
 <div id="toast"></div>
 

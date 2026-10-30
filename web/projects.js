@@ -43,11 +43,14 @@ function renderProjRootBar(){
   const roots=p.roots, infos=p.roots_info||[];
   const dead=infos.filter(i=>i.exists===false);
   const txt=roots.length===1 ? shortPath(roots[0]) : shortPath(roots[0])+' 等 '+roots.length+' 个目录';
-  el.innerHTML='📂 '+esc(txt)+(dead.length?' ⚠':'');
+  el.innerHTML='📂 '+esc(txt)+(dead.length?' ⚠':'')
+    + ' <button class="btn-ghost btn-sm" id="projRescanBtn" title="重新扫描该项目根目录">🔄 扫描</button>';
   el.title = (dead.length?'⚠ 有 '+dead.length+' 个目录已失效（被改名或移动过），点「📁 管理项目」可重新定位\n\n':'')
            + roots.join('\n') + '\n\n点击打开：'+roots[0];
   el.classList.add('show');
   el.classList.toggle('dead', dead.length>0);
+  const rb=document.getElementById('projRescanBtn');
+  if(rb) rb.onclick=e=>{ e.stopPropagation(); onProjAction('scan', state.project); };
   el.onclick=async()=>{
     if(dead.length && infos[0] && infos[0].exists===false){
       toast('该目录已失效：'+roots[0]+'（可在「📁 管理项目」里重新定位）'); return;
@@ -227,6 +230,8 @@ async function saveProj(){
   const md=document.getElementById('projDepth').value.trim();
   const note=document.getElementById('projNote').value.trim();
   if(!name){ toast('请填写项目名称'); return; }
+  const created=!projEditingId;
+  const oldP=created?null:state.projects.find(x=>x.id===projEditingId);
   const payload={name, roots, max_depth: md===''?null:(parseInt(md,10)||null), note};
   try{
     if(projEditingId) await apiPut('/api/projects/'+projEditingId, payload);
@@ -234,9 +239,16 @@ async function saveProj(){
     document.getElementById('projModal').classList.remove('show');
     toast('项目已保存');
     await loadProjects();
-    if(!projEditingId){                        // 新建后自动切换过去
+    if(created){                               // 新建后自动切换并立即扫描
       const np=state.projects.find(p=>p.name===name);
-      if(np) switchProject(np.id);
+      if(np){ switchProject(np.id); onProjAction('scan', np.id); }
+    }else{                                     // 编辑时根目录有变化也自动重扫
+      const np=state.projects.find(x=>x.id===projEditingId);
+      const changed=JSON.stringify((oldP&&oldP.roots)||[])!==JSON.stringify((np&&np.roots)||[]);
+      if(np && changed && np.roots.length){
+        toast('根目录已变更，开始重新扫描');
+        onProjAction('scan', np.id);
+      }
     }
   }catch(e){ toast('保存失败: '+e.message); }
 }

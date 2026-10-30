@@ -1,7 +1,7 @@
 // 中间文件清单：列表渲染与勾选
 // ---------- 文件清单 ----------
 async function loadFiles(){
-  const p=new URLSearchParams({ search:state.search, status:state.status, ext:state.ext, type:state.type,
+  const p=new URLSearchParams({ search:state.search, status:state.status, ext:state.ext, ftype:state.type,
     folder:state.folder, tag:state.tag, page:state.page, page_size:state.pageSize, sort:state.sort,
     project:state.project, show_missing:state.showMissing?1:0 });
   const r=await apiGet('/api/files?'+p.toString());
@@ -82,8 +82,10 @@ function renderList(r){
     tr.querySelector('.rowchk').onclick=e=>{ e.stopPropagation(); toggleSelect(parseInt(tr.dataset.id)); };
     tr.onclick=()=>selectFile(parseInt(tr.dataset.id), tr.dataset.path);
   });
-  const total=r.total, ps=state.pageSize, pages=Math.max(1,Math.ceil(total/ps));
-  document.getElementById('pageInfo').textContent=`第 ${state.page}/${pages} 页 · 共 ${total.toLocaleString()} 条`;
+  const total=r.total, ps=state.pageSize;
+  state.pages=Math.max(1,Math.ceil(total/ps));
+  if(state.page>state.pages){ state.page=state.pages; loadFiles(); return; }  // 过滤/删除后页码越界，自动回跳最后一页
+  document.getElementById('pageInfo').textContent=`第 ${state.page}/${state.pages} 页 · 共 ${total.toLocaleString()} 条`;
   document.getElementById('listTitle').textContent= state.folder?('📂 '+state.folder):'全部文件';
   updateSelBar();
 }

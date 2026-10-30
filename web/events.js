@@ -11,6 +11,26 @@ document.getElementById('typeFilter').onchange=()=>{
     document.getElementById('typeFilter').value==='_custom' ? '' : 'none';
   runSearch();
 };
+// ---------- 调试日志面板 ----------
+document.getElementById('debugBtn').onclick=()=>{
+  document.getElementById('debugPanel').classList.add('open'); renderDebugLog(); };
+document.getElementById('closeDebug').onclick=()=>
+  document.getElementById('debugPanel').classList.remove('open');
+document.getElementById('clearDebugLog').onclick=()=>{ fitLogs.length=0; renderDebugLog(); };
+document.getElementById('copyDebugLog').onclick=()=>{
+  const text=fitLogs.map(l=>'['+fmtLogTime(l.t)+']'+(l.err?'[错误] ':' ')+l.msg).join('\n');
+  navigator.clipboard.writeText(text).then(()=>toast('已复制全部日志（'+fitLogs.length+' 条）'))
+    .catch(()=>toast('复制失败，请在面板中手动选择文本'));
+};
+// ←/→ 快速在详情间切换（输入框/下拉内不生效）
+document.addEventListener('keydown',e=>{
+  if(e.altKey||e.ctrlKey||e.metaKey) return;
+  if(e.key!=='ArrowLeft'&&e.key!=='ArrowRight') return;
+  const tg=e.target&&e.target.tagName;
+  if(tg==='INPUT'||tg==='TEXTAREA'||tg==='SELECT') return;
+  if(document.getElementById('dirModal').classList.contains('show')) return;  // 目录选择器内方向键用于浏览
+  navDetail(e.key==='ArrowLeft'?-1:1);
+});
 document.getElementById('treeDepth').onchange=loadTree;
 document.getElementById('selectAll').onchange=e=>{
   const chk=e.target.checked;
@@ -18,7 +38,10 @@ document.getElementById('selectAll').onchange=e=>{
   updateSelBar();
 };
 document.getElementById('prevPage').onclick=()=>{ if(state.page>1){ state.page--; loadFiles(); } };
-document.getElementById('nextPage').onclick=()=>{ state.page++; loadFiles(); };
+document.getElementById('nextPage').onclick=()=>{
+  // 上限 = ceil(total/page_size)，由 renderList 写入 state.pages
+  if(state.page < (state.pages||1)){ state.page++; loadFiles(); }
+};
 document.getElementById('tasksBtn').onclick=()=>{ document.getElementById('tasksPanel').classList.toggle('open'); if(document.getElementById('tasksPanel').classList.contains('open')) loadTasks(); };
 document.getElementById('closeTasks').onclick=()=>document.getElementById('tasksPanel').classList.remove('open');
 document.getElementById('exportBtn').onclick=doExport;

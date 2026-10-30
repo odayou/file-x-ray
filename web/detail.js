@@ -44,6 +44,8 @@ function renderDetail(d){
     <textarea id="detailNote" placeholder="给这个文件写备注…">${esc(d.note)}</textarea>
     <div class="detail-actions">
       <button class="btn-primary btn-sm" id="saveDetail">保存备注/状态/标签</button>
+      <button class="btn-ghost btn-sm" id="navPrev" title="上一个（←）">⬅ 上一个</button>
+      <button class="btn-ghost btn-sm" id="navNext" title="下一个（→）">下一个 ➡</button>
       ${(d.category==='image'||d.category==='pdf')?'<button class="btn-ghost btn-sm" id="proofBtn">🔍 校对模式</button>':''}
       <button class="btn-ghost btn-sm" id="openFolder">打开所在文件夹</button>
       <button class="btn-ghost btn-sm" id="toggleSel">${state.selection.has(d.id)?'移出选择':'加入选择'}</button>
@@ -60,6 +62,8 @@ function renderDetail(d){
       toast('已保存'); loadStats(); loadTags(); loadFiles(); }catch(e){ toast('保存失败: '+e.message); }
   };
   document.getElementById('saveDetail').onclick=save;
+  document.getElementById('navPrev').onclick=()=>navDetail(-1);
+  document.getElementById('navNext').onclick=()=>navDetail(1);
   const proofBtn=document.getElementById('proofBtn');
   if(proofBtn) proofBtn.onclick=()=>openProofread(d);
   document.getElementById('openFolder').onclick=async()=>{ try{ await apiPost('/api/open',{path:d.path}); toast('已调用系统打开文件夹'); }catch(e){ toast('打开失败: '+e.message); } };
@@ -149,4 +153,31 @@ function openProofread(d){
     view.addEventListener('pointerup',()=>drag=null);
     view.addEventListener('dblclick',()=>{ scale=1; tx=0; ty=0; apply(); });
   }
+}
+
+// ---------- 详情内上一个/下一个：在当前清单（过滤+排序+分页）范围内导航 ----------
+function detailNavIds(){
+  return Array.from(document.querySelectorAll('#fileRows tr.row')).map(tr=>parseInt(tr.dataset.id,10));
+}
+async function navDetail(dir){
+  const ids=detailNavIds();
+  if(!ids.length) return;
+  const ni=ids.indexOf(state.currentId)+dir;
+  if(ni<0){                                   // 本页第一个再往前 → 上一页最后一个
+    if(state.page>1){
+      state.page--; await loadFiles();
+      const ids2=detailNavIds();
+      if(ids2.length) await selectFile(ids2[ids2.length-1]);
+    }else toast('已经是第一个');
+    return;
+  }
+  if(ni>=ids.length){                         // 本页最后一个再往后 → 下一页第一个
+    if(state.page<(state.pages||1)){
+      state.page++; await loadFiles();
+      const ids2=detailNavIds();
+      if(ids2.length) await selectFile(ids2[0]);
+    }else toast('已经是最后一个');
+    return;
+  }
+  await selectFile(ids[ni]);
 }
