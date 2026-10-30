@@ -3,7 +3,7 @@
 """
 文件索引与管理工具 —— 后端服务 (FastAPI)
 运行：pip install fastapi uvicorn  →  python backend.py
-默认监听 http://127.0.0.1:8000
+默认感知 http://127.0.0.1:8000
 环境变量：FIT_DB(数据库路径) / FIT_HOST / FIT_PORT
 说明：本进程运行在用户本机，拥有完整文件系统权限；浏览器仅负责界面与发请求。
 
@@ -41,9 +41,25 @@ DB_PATH = os.environ.get("FIT_DB", DEFAULT_DB)
 HOST = os.environ.get("FIT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("FIT_PORT", "8000"))
 
-# 本地访问令牌：默认每次启动随机生成，前端页面会被自动注入该值并在请求中携带。
+# 本地访问令牌：优先用环境变量 FIT_TOKEN；否则持久化到用户目录（跨重启不变，
+# 重启后旧链接/书签仍然有效）；首次启动自动生成。写失败（只读环境等）则退回每次随机。
 # 设为空字符串（FIT_TOKEN=""）可关闭校验（仅本地调试时使用）。
-SECRET_TOKEN = os.environ.get("FIT_TOKEN", "") or secrets.token_hex(16)
+TOKEN_FILE = os.path.join(os.path.expanduser("~"), ".file_xray_token")
+SECRET_TOKEN = os.environ.get("FIT_TOKEN", "")
+if not SECRET_TOKEN:
+    try:
+        if os.path.isfile(TOKEN_FILE):
+            with open(TOKEN_FILE, "r", encoding="utf-8") as _f:
+                SECRET_TOKEN = _f.read().strip()
+    except Exception:
+        pass
+if not SECRET_TOKEN:
+    SECRET_TOKEN = secrets.token_hex(16)
+    try:
+        with open(TOKEN_FILE, "w", encoding="utf-8") as _f:
+            _f.write(SECRET_TOKEN)
+    except Exception:
+        pass
 # 写接口请求体大小上限（防止异常大请求），默认 25MB
 MAX_BODY = int(os.environ.get("FIT_MAX_BODY_MB", "25")) * 1024 * 1024
 
@@ -53,7 +69,7 @@ MAX_BODY = int(os.environ.get("FIT_MAX_BODY_MB", "25")) * 1024 * 1024
 FTS_ENABLED = os.environ.get("FIT_FTS", "1").lower() not in ("0", "false", "no")
 FTS_OK = False
 FTS_MIN_LEN = 3
-# 目录实时监听（watchdog）相关状态
+# 目录实时感知（watchdog）相关状态
 WATCHDOG_ERR = ""
 
 TEXT_EXTS = {
@@ -67,6 +83,13 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico", 
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".m4v", ".mpg", ".mpeg"}
 AUDIO_EXTS = {".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".wma", ".amr", ".aiff", ".opus"}
 PDF_EXTS = {".pdf"}
+DOC_EXTS = {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".wps", ".et",
+            ".dps", ".odt", ".ods", ".odp"}
+# 类型过滤预设：每个类别对应一组扩展名（前端下拉直接选用）
+CATEGORY_EXTS = {
+    "image": IMAGE_EXTS, "video": VIDEO_EXTS, "audio": AUDIO_EXTS,
+    "pdf": PDF_EXTS, "doc": DOC_EXTS, "text": TEXT_EXTS,
+}
 
 # 默认状态（首次运行写入数据库，之后以数据库为准，可在界面增删改）
 DEFAULT_STATUSES = [
@@ -335,7 +358,7 @@ def init_db():
         c.execute("ALTER TABLE search_tasks ADD COLUMN project_id INTEGER DEFAULT 0")
     except Exception:
         pass
-    # 记录已扫描过的根目录，供实时监听（watchdog）使用
+    # 记录已扫描过的根目录，供实时感知（watchdog）使用
     c.execute("CREATE TABLE IF NOT EXISTS scan_roots(root TEXT PRIMARY KEY, added_at REAL)")
     # 项目：文件的“自由组合”。本身不复制文件，只记录一组根目录与展示信息。
     c.execute("""
@@ -480,13 +503,19 @@ def _umi_lang(tesseract_langs):
     return "ch_and_en"
 
 def umi_ocr(path, langs=OCR_LANGS):
-    """通过 Umi-OCR 的 HTTP API 识别图片，返回文字；服务不可达/解析失败返回 None。"""
+    """通过 Umi-OCR 的 HTTP API 识别图片，返回文字；服务不可达/失败返回 None。
+
+    Umi-OCR 的 /api/ocr 只接受 base64 字段（本机路径字段不存在），
+    因此读取文件转 base64 上送；options 用 data.format=text 让返回为纯文本。
+    """
     import urllib.request
+    import base64
     url = UMI_OCR_URL + "/api/ocr"
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
     payload = json.dumps({
-        "base64": False,
-        "images": [path],
-        "options": {"language": _umi_lang(langs)},
+        "base64": b64,
+        "options": {"data.format": "text"},
     }).encode("utf-8")
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     try:
@@ -494,17 +523,23 @@ def umi_ocr(path, langs=OCR_LANGS):
             data = json.loads(resp.read().decode("utf-8"))
     except Exception:
         return None
-    try:
+    if data.get("code") != 100:
+        print("Umi-OCR 返回错误 code=%s: %s" % (data.get("code"), data.get("data")))
+        return None
+    d = data.get("data")
+    if isinstance(d, str):
+        return d.strip()
+    if isinstance(d, list):
         texts = []
-        for item in data.get("data", []):
-            t = item.get("OCR_Text")
-            if isinstance(t, list):
-                texts.extend([x for x in t if x])
-            elif t:
+        for item in d:
+            if isinstance(item, dict):
+                t = item.get("text") or item.get("OCR_Text")
+            else:
+                t = item
+            if t:
                 texts.append(str(t))
         return "\n".join(texts).strip()
-    except Exception:
-        return None
+    return None
 
 def tesseract_ocr(path, langs=OCR_LANGS):
     import pytesseract
@@ -805,6 +840,10 @@ def build_export(ids, sidecar):
 # ----------------------------------------------------------------------------
 app = FastAPI(title="文件索引与管理工具")
 
+# 前端 JS 模块（web/ 目录，按职责拆分）静态伺服；不含敏感信息，无需令牌
+from fastapi.staticfiles import StaticFiles
+app.mount("/web", StaticFiles(directory=os.path.join(BASE_DIR, "web")), name="web")
+
 # ----------------------------------------------------------------------------
 # 安全中间件：本地令牌校验 + 写接口请求体大小限制
 # 仅对 /api/ 路径生效；页面本身（/）不受限，由后端在返回时注入令牌。
@@ -825,10 +864,26 @@ async def security_middleware(request: Request, call_next):
                 return JSONResponse(status_code=401, content={"error": "未授权：缺少或错误的访问令牌"})
     return await call_next(request)
 
+def _norm_exts(ext):
+    """把 'png, .jpg mp4' 之类输入归一化为扩展名列表（去重、补点、小写）。"""
+    import re
+    out = set()
+    for e in re.split(r"[,;，；\s]+", (ext or "").strip()):
+        e = e.strip().lower()
+        if not e:
+            continue
+        if not e.startswith("."):
+            e = "." + e
+        out.add(e)
+    return sorted(out)
+
+
 def _build_where(search, status, ext, folder, tag, force_like=False, scope=None,
-                 include_missing=False):
+                 include_missing=False, ftype=""):
     """构造查询条件。返回 (where_sql, params, used_fts)。
     搜索词长度 >= 3 且 FTS 可用时走全文索引；否则（含中文双字词）回退 LIKE。
+    ext 支持逗号/空格分隔的多格式；ftype 为类型预设（image/video/...），
+    二者同时给出时 ftype 优先。
     scope=(sql, params) 为项目范围条件（按根目录实时匹配）。
     include_missing=False 时排除磁盘上已不存在的记录，使视图反映当前真实结构。
     """
@@ -851,9 +906,10 @@ def _build_where(search, status, ext, folder, tag, force_like=False, scope=None,
     if status and status != "all":
         conds.append("status=?")
         params.append(status)
-    if ext:
-        conds.append("ext=?")
-        params.append(ext.lower())
+    exts = sorted(CATEGORY_EXTS[ftype]) if ftype in CATEGORY_EXTS else _norm_exts(ext)
+    if exts:
+        conds.append("ext IN (%s)" % ",".join("?" * len(exts)))
+        params += exts
     if folder:
         conds.append("(parent=? OR rel_path LIKE ? ESCAPE '\\')")
         params += [folder, folder + "/%"]
@@ -964,8 +1020,10 @@ def list_dirs(path: str = ""):
 
 @app.get("/api/dirs/quick")
 def quick_dirs():
-    """常用位置快捷入口（主目录 / 桌面 / 文档 / 下载）。"""
+    """常用位置快捷入口：此电脑 / 主目录 / 桌面 / 文档 / 下载 / 外接设备。"""
     out = []
+    if os.name == "nt":
+        out.append({"name": "此电脑", "path": ""})   # 空路径 = 盘符列表
     home = os.path.expanduser("~")
     if os.path.isdir(home):
         out.append({"name": "用户主目录", "path": home})
@@ -974,8 +1032,21 @@ def quick_dirs():
         p = os.path.join(home, nm)
         if os.path.isdir(p):
             out.append({"name": label, "path": p})
-    if os.name != "nt" and os.path.isdir("/media"):
-        out.append({"name": "/media", "path": "/media"})
+    if os.name == "nt":
+        # 外接设备：可移动磁盘（U盘/移动硬盘）与光驱，按盘符枚举
+        import ctypes
+        import string
+        for d in string.ascii_uppercase:
+            root = d + ":\\"
+            t = ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(root))
+            if t in (2, 4):                          # DRIVE_REMOVABLE / DRIVE_CDROM
+                out.append({"name": "外接设备 %s:" % d, "path": root})
+    elif os.path.isdir("/Volumes"):                  # macOS 挂载的外接卷
+        for nm in sorted(os.listdir("/Volumes")):
+            if nm != "Macintosh HD":
+                out.append({"name": "外接设备 " + nm, "path": os.path.join("/Volumes", nm)})
+    elif os.path.isdir("/media"):                    # Linux 挂载点
+        out.append({"name": "外接设备 /media", "path": "/media"})
     return {"quick": out}
 
 
@@ -1155,7 +1226,7 @@ async def start_scan(request: Request):
             max_depth = int(md)
         except Exception:
             max_depth = None
-    # 记录扫描过的根目录，供实时监听复用
+    # 记录扫描过的根目录，供实时感知复用
     r_norm = norm_root(root)
     conn = get_db()
     conn.execute("INSERT OR REPLACE INTO scan_roots(root, added_at) VALUES(?,?)",
@@ -1257,7 +1328,7 @@ def get_tree(depth: int = 99, project: int = 0):
 @app.get("/api/files")
 def list_files(search: str = "", status: str = "all", ext: str = "", folder: str = "",
                tag: str = "", page: int = 1, page_size: int = 100, sort: str = "name",
-               project: int = 0, show_missing: int = 0):
+               project: int = 0, show_missing: int = 0, ftype: str = ""):
     conn = get_db()
     allowed = {"name", "size", "mtime", "status", "depth"}
     order = sort if sort in allowed else "name"
@@ -1268,7 +1339,7 @@ def list_files(search: str = "", status: str = "all", ext: str = "", folder: str
     def _run(force_like):
         w, p, u = _build_where(search, status, ext, folder, tag,
                                force_like=force_like, scope=scope,
-                               include_missing=inc_missing)
+                               include_missing=inc_missing, ftype=ftype)
         t = conn.execute(f"SELECT COUNT(*) FROM files {w}", p).fetchone()[0]
         rr = conn.execute(
             f"SELECT {SELECT_COLS} FROM files {w} ORDER BY {order} LIMIT ? OFFSET ?",
@@ -1368,6 +1439,15 @@ async def update_file(fid: int, request: Request):
     tags = to_tag_string(data.get("tags", ""))
     conn = get_db()
     conn.execute("UPDATE files SET note=?, status=?, tags=? WHERE id=?", (note, status, tags, fid))
+    # 文字稿人工校对：transcript（图片/音视频）；pdf_text（PDF 文字层，存 content 列）。
+    # FTS 触发器 files_fts_au 会在 UPDATE 后自动同步搜索索引。
+    transcript = data.get("transcript")
+    if transcript is not None:
+        conn.execute("UPDATE files SET transcript=?, transcribed_at=? WHERE id=?",
+                     (transcript, time.time(), fid))
+    pdf_text = data.get("pdf_text")
+    if pdf_text is not None:
+        conn.execute("UPDATE files SET content=? WHERE id=?", (pdf_text, fid))
     conn.commit()
     conn.close()
     return {"ok": True}
@@ -1564,7 +1644,7 @@ def retry_task(tid: int):
     return run_task(tid)
 
 # ----------------------------------------------------------------------------
-# 目录实时监听（watchdog）：文件增删改自动更新索引
+# 目录实时感知（watchdog）：文件增删改自动更新索引
 # ----------------------------------------------------------------------------
 try:
     from watchdog.observers import Observer
@@ -1581,7 +1661,7 @@ _observer = None
 
 
 def watch_add_roots(roots):
-    """监听已开启时，把新的根目录追加进监听（无需停止再启动）。"""
+    """感知已开启时，把新的根目录追加进感知（无需停止再启动）。"""
     global _observer
     if not WATCH_STATE["enabled"] or _observer is None or not WATCHDOG_OK:
         return
@@ -1720,7 +1800,7 @@ def watch_status():
 
 @app.post("/api/watch")
 async def watch_control(request: Request):
-    """开启/关闭目录实时监听。start 时可传 roots，省略则用已扫描过的根目录。"""
+    """开启/关闭目录实时感知。start 时可传 roots，省略则用已扫描过的根目录。"""
     global _observer
     data = await request.json()
     action = (data.get("action") or "").lower()
@@ -1750,7 +1830,7 @@ async def watch_control(request: Request):
         conn.close()
     roots = [r for r in roots if r and os.path.isdir(r)]
     if not roots:
-        raise HTTPException(400, "没有可监听的目录，请先扫描一次")
+        raise HTTPException(400, "没有可感知的目录，请先扫描一次")
 
     if _observer is not None:
         try:
@@ -1909,32 +1989,50 @@ OCR_ERR = ""
 OCR_LANG_LIST = []
 
 def ocr_check():
+    """按当前引擎设置判断 OCR 是否可用。
+
+    - umi：只要求 Umi-OCR HTTP 服务在线（不检测 tesseract）
+    - tesseract：只检测 tesseract + pytesseract
+    - auto：tesseract 可用，或 Umi-OCR 在线，二者其一即可
+    Umi 在线状态每次实时探测（服务可能后启动），不缓存。
+    """
+    engine = (OCR_ENGINE or "auto").lower()
+    if engine == "umi":
+        if umi_reachable():
+            return True, "", []
+        return False, "Umi-OCR 服务不可达（%s），请确认其 HTTP 接口已启动" % UMI_OCR_URL, []
     global OCR_AVAIL, OCR_ERR, OCR_LANG_LIST
-    if OCR_AVAIL is not None:
-        return OCR_AVAIL, OCR_ERR, OCR_LANG_LIST
-    langs = []
-    try:
-        import pytesseract
+    if OCR_AVAIL is None:
+        langs = []
         try:
-            langs = pytesseract.get_languages(config="") or []
-        except Exception:
-            out = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True)
-            for line in (out.stderr + out.stdout).splitlines():
-                line = line.strip()
-                if line and "available languages" not in line and "Tesseract" not in line:
-                    langs.append(line)
-        OCR_LANG_LIST = langs
-        OCR_AVAIL = True
-    except Exception as e:
-        OCR_AVAIL = False
-        OCR_ERR = str(e)
+            import pytesseract
+            try:
+                langs = pytesseract.get_languages(config="") or []
+            except Exception:
+                out = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True)
+                for line in (out.stderr + out.stdout).splitlines():
+                    line = line.strip()
+                    if line and "available languages" not in line and "Tesseract" not in line:
+                        langs.append(line)
+            OCR_LANG_LIST = langs
+            OCR_AVAIL = True
+        except Exception as e:
+            OCR_AVAIL = False
+            OCR_ERR = str(e)
+    if OCR_AVAIL:
+        return True, "", OCR_LANG_LIST
+    if engine == "auto" and umi_reachable():
+        return True, "", []          # auto 模式：tesseract 缺失但 Umi-OCR 在线，同样可用
     return OCR_AVAIL, OCR_ERR, OCR_LANG_LIST
 
 def umi_reachable():
     import urllib.request
+    import urllib.error
     try:
         urllib.request.urlopen(UMI_OCR_URL, timeout=2)
         return True
+    except urllib.error.HTTPError:
+        return True                  # 有 HTTP 响应（含 404）即说明服务在线
     except Exception:
         return False
 
@@ -1991,7 +2089,7 @@ async def start_ocr(request: Request):
         raise HTTPException(400, "未选择任何文件")
     avail, err, _ = ocr_check()
     if not avail:
-        raise HTTPException(409, "未安装 OCR 依赖（tesseract + pytesseract）：" + err)
+        raise HTTPException(409, "OCR 当前不可用：" + err)
     jid = str(int(time.time() * 1000))
     ocr_jobs[jid] = {"total": len(ids), "done": 0, "current": "", "error": None, "finished": False}
     t = threading.Thread(target=ocr_worker, args=(ids, jid), daemon=True)

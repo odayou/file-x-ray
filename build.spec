@@ -10,7 +10,7 @@ a = Analysis(
     ['backend.py'],
     pathex=[],
     binaries=[],
-    datas=[('index.html', '.')],
+    datas=[('index.html', '.'), ('web', 'web')],
     hiddenimports=[
         'uvicorn.logging', 'uvicorn.loops', 'uvicorn.loops.auto',
         'uvicorn.protocols', 'uvicorn.protocols.http', 'uvicorn.protocols.http.h11',
