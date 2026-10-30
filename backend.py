@@ -1430,12 +1430,22 @@ async def batch_update(request: Request):
 async def open_file(request: Request):
     data = await request.json()
     path = data.get("path", "")
-    # 安全：仅允许打开“已索引”的文件，避免被借接口打开任意路径
+    # 安全：仅允许打开“已索引的文件”或“项目自己配置的根目录”，避免被借接口打开任意路径
     conn = get_db()
-    row = conn.execute("SELECT 1 FROM files WHERE path=?", (path,)).fetchone()
+    ok = bool(conn.execute("SELECT 1 FROM files WHERE path=?", (path,)).fetchone())
+    if not ok:
+        p = norm_root(path)
+        for r in conn.execute("SELECT roots FROM projects").fetchall():
+            try:
+                roots = [norm_root(x) for x in json.loads(r["roots"] or "[]")]
+            except Exception:
+                continue
+            if p in roots:
+                ok = True
+                break
     conn.close()
-    if not row:
-        raise HTTPException(403, "只能打开已被本工具索引的文件")
+    if not ok:
+        raise HTTPException(403, "只能打开已被本工具索引的文件或项目的根目录")
     return open_folder(path)
 
 # ---------- 导出 ----------
