@@ -20,7 +20,7 @@ function closeDirModal(){ document.getElementById('dirModal').classList.remove('
 let dirPickCb=null;                       // 非空的目录选择回调（项目编辑时用）
 function pickDir(p){
   if(dirPickCb) dirPickCb(p);
-  else document.getElementById('rootPath').value=p;
+  else{ const rp=document.getElementById('rootPath'); if(rp) rp.value=p; }  // 兼容旧入口
   closeDirModal();
 }
 async function openDirModal(onPick){

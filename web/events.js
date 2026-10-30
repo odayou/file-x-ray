@@ -1,7 +1,10 @@
 // 事件绑定与初始化
 // ---------- 事件绑定 ----------
-document.getElementById('scanBtn').onclick=doScan;
 document.getElementById('searchBtn').onclick=runSearch;
+document.getElementById('projRescanBtn').onclick=()=>{
+  if(!state.project){ toast('当前未选择项目，请先选择或新建项目后再扫描'); return; }
+  onProjAction('scan', state.project);
+};
 document.getElementById('searchInput').addEventListener('keydown',e=>{ if(e.key==='Enter') runSearch(); });
 document.getElementById('statusFilter').onchange=runSearch;
 document.getElementById('extFilter').addEventListener('keydown',e=>{ if(e.key==='Enter') runSearch(); });
@@ -50,10 +53,8 @@ document.getElementById('saveBatch').onclick=saveBatch;
 document.getElementById('cancelBatch').onclick=()=>document.getElementById('batchModal').classList.remove('show');
 document.getElementById('reportBtn').onclick=doReport;
 document.getElementById('watchBtn').onclick=toggleWatch;
-document.getElementById('pickDirBtn').onclick=openDirModal;
 document.getElementById('cancelDir').onclick=closeDirModal;
 document.getElementById('okDirBtn').onclick=()=>{ if(dirCur) pickDir(dirCur); else closeDirModal(); };
-document.getElementById('clearSelBtn').onclick=()=>{ state.selection.clear(); updateSelBar(); loadFiles(); };
 document.getElementById('transcribeSelBtn').onclick=()=>{
   const ids=Array.from(state.selection);
   if(!ids.length){ toast('请先勾选文件'); return; }
@@ -95,10 +96,14 @@ document.getElementById('addStatusRow').onclick=()=>{
 };
 
 // ---------- 初始化 ----------
-updateCrumb(); renderTagFilter();
-loadStatuses().catch(()=>{});
-// 先载入项目列表，再按当前项目（默认“全部文件”）载入统计 / 树 / 标签 / 清单
-loadProjects().then(()=>{ loadStats(); loadTree(); loadTags(); loadFiles(); }).catch(()=>{});
+const restored=restoreState();                 // 先恢复上次现场（项目/位置/搜索/类型/文件）
+renderTagFilter();
+loadStatuses().then(()=>{ document.getElementById('statusFilter').value=state.status; }).catch(()=>{});
+// 先载入项目列表，再按恢复的项目载入统计 / 树 / 标签 / 清单，最后回到上次选中的文件
+loadProjects().then(()=>{
+  loadStats(); loadTree(); loadTags(); loadFiles();
+  if(restored && state.currentId) selectFile(state.currentId);
+}).catch(()=>{});
 apiGet('/api/transcribe/check').then(r=>{ state.whisper=r; if(state.currentId) selectFile(state.currentId); })
   .catch(()=>{ state.whisper={available:false}; });
 apiGet('/api/ocr/check').then(r=>{ state.ocr=r; }).catch(()=>{ state.ocr={available:false}; });

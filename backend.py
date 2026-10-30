@@ -90,6 +90,8 @@ CATEGORY_EXTS = {
     "image": IMAGE_EXTS, "video": VIDEO_EXTS, "audio": AUDIO_EXTS,
     "pdf": PDF_EXTS, "doc": DOC_EXTS, "text": TEXT_EXTS,
 }
+# 内容必然为二进制的扩展名（嗅探可跳过，省一次 IO）
+KNOWN_BIN_EXTS = IMAGE_EXTS | VIDEO_EXTS | AUDIO_EXTS | PDF_EXTS | DOC_EXTS
 
 # 默认状态（首次运行写入数据库，之后以数据库为准，可在界面增删改）
 DEFAULT_STATUSES = [
@@ -229,7 +231,11 @@ def project_scope(conn, pid):
     if pid:
         return "", [], []                           # 项目显式设为“不限制目录”
     virt = common_parent(all_project_roots(conn))
-    return "", [], ([virt] if virt else [])
+    # 公共父目录无意义（不同盘符/无交集时只剩分隔符）则不设虚拟根，
+    # 沿用各文件入库时的相对路径，避免整棵树/清单被拍平成纯文件名
+    if virt and virt not in ("/", "\\"):
+        return "", [], [virt]
+    return "", [], []
 
 
 def rel_for(path, roots):
@@ -451,6 +457,33 @@ def categorize(ext):
     if ext in TEXT_EXTS:
         return "text"
     return "other"
+
+
+def sniff_text(path, sample=8192):
+    """内容嗅探：判断文件是否为纯文本。TEXT_EXTS 清单之外的新类型零维护自动覆盖。
+
+    规则：含 NUL 字节 → 二进制；UTF-8 严格解码成功 → 文本；
+    GB18030 解码成功再用控制字符占比排除伪装成文本的二进制。"""
+    try:
+        with open(path, "rb") as f:
+            chunk = f.read(sample)
+    except Exception:
+        return False
+    if not chunk:
+        return True                                    # 空文件按文本处理
+    if b"\x00" in chunk:
+        return False
+    try:
+        chunk.decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        pass
+    try:
+        text = chunk.decode("gb18030")
+    except UnicodeDecodeError:
+        return False
+    ctrl = sum(1 for c in text if ord(c) < 32 and c not in "\t\n\r\f\v")
+    return ctrl / max(len(text), 1) < 0.1              # GB18030 兼容字节面太宽，用控制字符占比兜底
 
 def like_escape(s):
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -720,9 +753,11 @@ def scan_worker(root, max_depth, scan_id, project_id=None):
                 moved_id = None
                 if not existing:
                     moved_id = find_orphan(conn, full, fn, st.st_size, st.st_mtime)
-                # 仅对文本/PDF 抽取可搜索文字；图片 OCR、音视频转写为按需，重扫不覆盖
+                # 仅对文本/PDF 抽取可搜索文字；图片 OCR、音视频转写为按需，重扫不覆盖。
+                # 文本判定：清单内直接命中；清单外先内容嗅探（未知新类型零维护自动覆盖）
                 content = ""
-                is_text = ext in TEXT_EXTS
+                is_text = ext in TEXT_EXTS or (
+                    ext not in KNOWN_BIN_EXTS and st.st_size <= FILE_READ_LIMIT and sniff_text(full))
                 is_pdf = ext in PDF_EXTS
                 if is_text and st.st_size <= FILE_READ_LIMIT:
                     try:
@@ -778,18 +813,34 @@ def scan_worker(root, max_depth, scan_id, project_id=None):
 # 打开文件夹
 # ----------------------------------------------------------------------------
 def open_folder(path):
+    fallback = ""
     if not os.path.exists(path):
-        raise HTTPException(404, "文件不存在")
+        # 原路径已不存在（文件被移动/删除、索引未更新）：回退到最近一个仍存在的祖先目录
+        p = path
+        while True:
+            parent = os.path.dirname(p)
+            if parent == p:
+                raise HTTPException(404, "路径及其上层目录均不存在：" + path)
+            p = parent
+            if os.path.isdir(p):
+                fallback = p
+                path = p
+                break
     try:
+        is_dir = os.path.isdir(path)
         if sys.platform == "win32":
-            subprocess.run(f'explorer /select,"{path}"', shell=True)
+            # 文件：资源管理器中定位；目录：直接打开该目录
+            if is_dir:
+                subprocess.run(f'explorer "{path}"', shell=True)
+            else:
+                subprocess.run(f'explorer /select,"{path}"', shell=True)
         elif sys.platform == "darwin":
-            subprocess.run(["open", "-R", path])
+            subprocess.run(["open", path] if is_dir else ["open", "-R", path])
         else:
-            subprocess.run(["xdg-open", os.path.dirname(path)])
+            subprocess.run(["xdg-open", path if is_dir else os.path.dirname(path)])
     except Exception as e:
         raise HTTPException(500, f"打开失败: {e}")
-    return {"ok": True}
+    return {"ok": True, "fallback": fallback}
 
 # ----------------------------------------------------------------------------
 # 导出打包
@@ -1299,12 +1350,22 @@ def get_tree(depth: int = 99, project: int = 0):
     w = ("WHERE (missing IS NULL OR missing=0)" +
          ((" AND " + scope[0]) if scope[0] else ""))
     folders = {}
+    real_map = {}                                   # 相对目录 -> 真实绝对目录（沿文件祖先链一对一映射）
     for r in conn.execute(f"SELECT path, rel_path FROM files {w}", list(scope[1])).fetchall():
         rel = rel_for(r["path"], roots)
         if rel is None:
             rel = (r["rel_path"] or "").replace("\\", "/")
         p = rel.rsplit("/", 1)[0] if "/" in rel else ""
         folders[p] = folders.get(p, 0) + 1
+        # 同一条记录的相对目录链与绝对目录链逐级对应，一遍扫描即可建立映射
+        ad = os.path.dirname(r["path"])
+        rd = p
+        while True:
+            real_map.setdefault(rd, ad)
+            if not rd:
+                break
+            rd = rd.rsplit("/", 1)[0] if "/" in rd else ""
+            ad = os.path.dirname(ad)
     if "" not in folders and folders:
         folders[""] = 0                             # 保证存在“（根目录）”入口，可点回全部
     cum = {}
@@ -1319,7 +1380,9 @@ def get_tree(depth: int = 99, project: int = 0):
         d = 0 if fpath == "" else fpath.count("/") + 1
         if d <= depth:
             name = "（根目录）" if fpath == "" else fpath.split("/")[-1]
-            result.append({"path": fpath, "name": name, "depth": d, "count": cnt})
+            # 根节点只是“回到全部”的入口，不代表某个真实目录，不给 real（不可打开）
+            result.append({"path": fpath, "name": name, "depth": d, "count": cnt,
+                           "real": real_map.get(fpath, "") if fpath else ""})
     result.sort(key=lambda x: (x["depth"], x["path"]))
     conn.close()
     return {"folders": result}
@@ -1402,9 +1465,20 @@ def file_detail(fid: int):
         raise HTTPException(404, "未找到文件")
     d = dict(r)
     cat = categorize(d["ext"])
+    # 清单外但内容为纯文本的扩展名（嗅探判定）：详情中同样支持预览
+    if cat == "other" and d["path"] and os.path.isfile(d["path"]) and sniff_text(d["path"]):
+        cat = "text"
     d["category"] = cat
     d["raw_url"] = f"/api/raw/{fid}"
-    d["preview_text"] = (d["content"] or "")[:100000] if cat == "text" else ""
+    preview = (d["content"] or "")[:100000]
+    if cat == "text" and not preview and d["path"] and os.path.isfile(d["path"]) \
+            and os.path.getsize(d["path"]) <= FILE_READ_LIMIT:
+        try:
+            with open(d["path"], "r", encoding="utf-8", errors="ignore") as f:
+                preview = f.read(100000)
+        except Exception:
+            preview = ""
+    d["preview_text"] = preview if cat == "text" else ""
     d["tags"] = parse_tags(d["tags"])
     d["exists"] = os.path.isfile(d["path"])
     d["missing"] = bool(d.get("missing") or 0)
@@ -1506,26 +1580,58 @@ async def batch_update(request: Request):
     return {"ok": True, "updated": len(ids)}
 
 # ---------- 打开文件夹 ----------
+def _resolve_open_path(conn, path):
+    """把调用方给的路径解析为可打开的真实路径。
+    绝对路径原样返回；相对路径（左侧文件夹树/位置过滤的值，如“笔记”）依次尝试：
+    1) 现存项目根下拼接；2) 用索引记录反查（文件 realpath 就在库里，dirname 即目录，
+    因此即使记录来自已删除的项目也能定位）。解析不出返回原值（后续按不存在处理）。"""
+    if os.path.isabs(path):
+        return path
+    rel = path.replace("\\", "/").strip("/")
+    if ".." in rel.split("/"):
+        raise HTTPException(403, "路径不允许包含 ..")
+    roots = []
+    for r in conn.execute("SELECT roots FROM projects").fetchall():
+        try:
+            roots += [norm_root(x) for x in json.loads(r["roots"] or "[]")]
+        except Exception:
+            continue
+    for rt in dict.fromkeys(roots):                  # 去重保持顺序
+        cand = os.path.join(rt, *rel.split("/")) if rel else rt
+        if os.path.exists(cand):
+            return cand
+    if not rel:
+        return path
+    rel_bs = rel.replace("/", os.sep)
+    row = conn.execute("SELECT path FROM files WHERE parent=? LIMIT 1", (rel_bs,)).fetchone()
+    if row:                                          # 有文件直接位于该文件夹：dirname 即真实目录
+        return os.path.dirname(row["path"])
+    row = conn.execute("SELECT path, rel_path FROM files WHERE rel_path LIKE ? ESCAPE '\\' LIMIT 1",
+                       (like_escape(rel_bs + os.sep) + "%",)).fetchone()
+    if row:                                          # 命中更深层文件：从其相对路径剥掉多出的后缀
+        file_rel = (row["rel_path"] or "").replace("/", os.sep)
+        d = os.path.dirname(row["path"])
+        suffix = file_rel[len(rel_bs):]
+        if not suffix:
+            return d
+        if d.endswith(suffix):
+            return d[:-len(suffix)]
+    return path
+
+
 @app.post("/api/open")
 async def open_file(request: Request):
     data = await request.json()
-    path = data.get("path", "")
-    # 安全：仅允许打开“已索引的文件”或“项目自己配置的根目录”，避免被借接口打开任意路径
+    path = (data.get("path") or "").strip()
+    if not path:
+        raise HTTPException(400, "缺少路径")
     conn = get_db()
-    ok = bool(conn.execute("SELECT 1 FROM files WHERE path=?", (path,)).fetchone())
-    if not ok:
-        p = norm_root(path)
-        for r in conn.execute("SELECT roots FROM projects").fetchall():
-            try:
-                roots = [norm_root(x) for x in json.loads(r["roots"] or "[]")]
-            except Exception:
-                continue
-            if p in roots:
-                ok = True
-                break
-    conn.close()
-    if not ok:
-        raise HTTPException(403, "只能打开已被本工具索引的文件或项目的根目录")
+    try:
+        path = _resolve_open_path(conn, path)
+    finally:
+        conn.close()
+    if not os.path.exists(path):
+        raise HTTPException(404, "路径不存在：" + path)
     return open_folder(path)
 
 # ---------- 导出 ----------
@@ -1723,7 +1829,9 @@ def _index_single(path):
             parent = os.path.dirname(rel)
             depth = rel.count(os.sep)
         content = ""
-        if ext in TEXT_EXTS and st.st_size <= FILE_READ_LIMIT:
+        is_text = ext in TEXT_EXTS or (
+            ext not in KNOWN_BIN_EXTS and st.st_size <= FILE_READ_LIMIT and sniff_text(path))
+        if is_text and st.st_size <= FILE_READ_LIMIT:
             try:
                 with open(path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read(CONTENT_INDEX_LIMIT)
@@ -1743,7 +1851,7 @@ def _index_single(path):
             """UPDATE files SET rel_path=?,name=?,ext=?,parent=?,size=?,mtime=?,depth=?,indexed_at=?,missing=0
                WHERE path=?""",
             (rel, fn, ext, parent, st.st_size, st.st_mtime, depth, time.time(), path))
-        if ext in TEXT_EXTS or ext in PDF_EXTS:
+        if is_text or ext in PDF_EXTS:
             conn.execute("UPDATE files SET content=? WHERE path=?", (content, path))
         conn.commit()
     finally:

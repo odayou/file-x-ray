@@ -1,11 +1,30 @@
 // 中间文件清单：列表渲染与勾选
 // ---------- 文件清单 ----------
 async function loadFiles(){
+  saveState();                       // 任何触发清单刷新的状态变化都落一次现场
+  // 未选项目 = “全部项目”：默认空视图（标注数据躺库，建项目后自动召回）；
+  // “查看全部扫描记录”是显式的彩蛋入口，开启后才真正查全表
+  // if(state.project===0 && !state.showAll){ renderNoProject(); return; }
   const p=new URLSearchParams({ search:state.search, status:state.status, ext:state.ext, ftype:state.type,
     folder:state.folder, tag:state.tag, page:state.page, page_size:state.pageSize, sort:state.sort,
     project:state.project, show_missing:state.showMissing?1:0 });
   const r=await apiGet('/api/files?'+p.toString());
   renderList(r);
+}
+function renderNoProject(){
+  const tb=document.getElementById('fileRows');
+  tb.innerHTML=`<tr><td colspan="7"><div class="empty">
+    尚未选择项目。<br>文件记录与标注安全保留，选择或新建项目后会自动召回。<br><br>
+    <a href="javascript:void(0)" id="showAllRecords" style="color:var(--primary)">（想直接翻全部扫描记录？点这里）</a>
+  </div></td></tr>`;
+  document.getElementById('pageInfo').textContent='';
+  const lt=document.getElementById('listTitle');
+  lt.textContent='🗂 全部项目';
+  lt.classList.remove('clickable'); lt.title=''; lt.onclick=null;
+  document.getElementById('detailActionBar').innerHTML='';
+  updateSelBar();
+  const link=document.getElementById('showAllRecords');
+  if(link) link.onclick=()=>{ state.showAll=true; loadFiles(); };
 }
 function tagChipsHtml(tags){
   if(!tags||!tags.length) return '';
@@ -86,11 +105,30 @@ function renderList(r){
   state.pages=Math.max(1,Math.ceil(total/ps));
   if(state.page>state.pages){ state.page=state.pages; loadFiles(); return; }  // 过滤/删除后页码越界，自动回跳最后一页
   document.getElementById('pageInfo').textContent=`第 ${state.page}/${state.pages} 页 · 共 ${total.toLocaleString()} 条`;
-  document.getElementById('listTitle').textContent= state.folder?('📂 '+state.folder):'全部文件';
+  // 所在位置：展示真实完整路径（过长中间缩略，悬停看全貌），点击打开；
+  // 未选项目时是“扫描过的所有文件”（索引全集，不对应任何目录，不可点）
+  const lt=document.getElementById('listTitle');
+  const proj=state.projects.find(x=>x.id===state.project);
+  const openPath = state.folderReal || state.folder || ((proj&&proj.roots&&proj.roots.length)?proj.roots[0]:'');
+  lt.textContent = state.folderReal ? ('📂 '+shortPath(state.folderReal, 60))
+                 : state.folder ? ('📂 '+state.folder)
+                 : state.project ? '📁 项目根目录'
+                 : (state.showAll ? '🗂 扫描过的所有文件（彩蛋视图 · 切换项目即退出）' : '🗂 扫描过的所有文件');
+  if(state.project && !state.folder && proj && (proj.roots||[]).length){
+    lt.title = '点击打开：'+proj.roots.join('\n');
+  }
+  if(openPath){
+    lt.classList.add('clickable');
+    lt.title='点击打开：'+openPath;
+    lt.onclick=async()=>{ try{ await apiPost('/api/open',{path:openPath}); toast('已打开：'+openPath); }catch(e){ toast('打开失败: '+e.message); } };
+  }else{
+    lt.classList.remove('clickable'); lt.title=''; lt.onclick=null;
+  }
   updateSelBar();
 }
 function toggleSelect(id){
   if(state.selection.has(id)) state.selection.delete(id); else state.selection.add(id);
+  saveState();
   const tr=document.querySelector(`tr.row[data-id="${id}"]`);
   if(tr){ tr.classList.toggle('sel', state.selection.has(id)); const c=tr.querySelector('.rowchk'); if(c)c.checked=state.selection.has(id); }
   updateSelBar();

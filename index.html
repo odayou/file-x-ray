@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>文件索引与管理工具</title>
+<title>文件索引与管理</title>
 <script>window.__FIT_AUTH_TOKEN__ = "FIT_TOKEN_PLACEHOLDER";</script>
 <style>
   :root {
@@ -18,6 +18,7 @@
   header h1 { font-size: 16px; margin: 0; font-weight: 600; white-space: nowrap; }
   header input { padding: 6px 8px; border-radius: 6px; border: 1px solid #334155; background: #1e293b; color: #fff; }
   header input::placeholder { color: #94a3b8; }
+  header select { padding: 6px 8px; border-radius: 6px; border: 1px solid #334155; background: #1e293b; color: #fff; }
   #rootPath { width: 320px; }
   #maxDepth { width: 70px; }
   button { cursor: pointer; border: none; border-radius: 6px; padding: 6px 12px; font-size: 13px; }
@@ -44,6 +45,10 @@
   .col.right { border-right: none; }
   .col-title { padding: 8px 12px; font-weight: 600; font-size: 12px; color: var(--muted);
                border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); z-index: 2; }
+  /* 详情头部：标题行 + 常驻操作按钮行，随滚动固定 */
+  #detailHead { position: sticky; top: 0; background: var(--panel); z-index: 3; border-bottom: 1px solid var(--border); }
+  #detailActionBar { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; min-height: 10px; }
+  #detailActionBar:empty { display: none; }
   .tree-node { padding: 4px 8px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tree-node:hover { background: var(--sel); }
   .tree-node.active { background: var(--sel); color: var(--primary); font-weight: 600; }
@@ -128,9 +133,8 @@
   #projRootBar { display:none; align-items:center; gap:5px; max-width:300px; font-size:11px;
     color:var(--muted); cursor:pointer; padding:3px 8px; border:1px solid var(--border);
     border-radius:6px; background:#f8fafc; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #projRootBar.show { display:inline-flex; }
-  #projRootBar:hover { background:#eef2f7; color:var(--text); }
-  #projRootBar.dead { color:#dc2626; border-color:#fca5a5; background:#fef2f2; }
+  #listTitle.clickable { cursor: pointer; }
+  #listTitle.clickable:hover { color: var(--primary); }
   .root-copy { cursor:pointer; font-size:11px; color:var(--muted); border:0; background:none; padding:0 2px; }
   .root-copy:hover { color:var(--text); }
   .btn-warn { background:#f59e0b; color:#fff; border:0; padding:3px 8px; border-radius:5px; font-size:11px; cursor:pointer; }
@@ -182,22 +186,17 @@
 </head>
 <body>
 <header>
-  <h1>📁 文件索引与管理工具</h1>
-  <input id="rootPath" placeholder="根目录路径，如 D:\MyFiles 或 /home/user/files" />
-  <button class="btn-ghost" id="pickDirBtn" title="点击选择根目录">📂 选择</button>
-  <input id="maxDepth" type="number" min="0" placeholder="层级" title="扫描最大层级，0=仅根目录文件，留空=不限" />
-  <button class="btn-primary" id="scanBtn">扫描建索引</button>
+  <h1>📁 文件索引与管理</h1>
+  <select id="projectSel" title="项目 = 一组根目录的视图。新建项目后自动扫描"
+          style="min-width:160px;max-width:240px"></select>
+  <button class="btn-ghost" id="projMgrBtn" title="新建 / 改名 / 改目录 / 删除 / 重扫项目">📁 管理项目</button>
   <div id="stats"></div>
 </header>
 
 <div class="toolbar">
-  <select id="projectSel" title="项目 = 文件的自由组合（一组根目录）。切换后立即生效，无需重新扫描"
-          style="min-width:150px;max-width:220px"></select>
-  <button class="btn-ghost btn-sm" id="projMgrBtn" title="新建 / 改名 / 改目录 / 删除 / 重扫项目">📁 管理项目</button>
-  <span id="projRootBar" title=""></span>
-  <span style="color:var(--border)">│</span>
-  <input id="searchInput" placeholder="搜索 文件名 / 备注 / 内容 / 标签 / 转写文字 / 图中文字" />
-  <button class="btn-primary btn-sm" id="searchBtn">搜索</button>
+  <button class="btn" id="projRescanBtn" title="重新扫描当前项目的根目录">🔄</button>
+  <input id="searchInput" placeholder="搜索 文件名 / 备注 / 内容 / 标签 / 转写文字 / 图中文字"/>
+  <button class="btn-primary" id="searchBtn">搜索</button>
   <select id="statusFilter"><option value="all">全部状态</option></select>
   <select id="typeFilter" style="width:120px">
     <option value="">全部类型</option>
@@ -210,7 +209,6 @@
     <option value="_custom">自定义格式…</option>
   </select>
   <input id="extFilter" placeholder="多格式如 png, jpg, mp4" style="width:160px;display:none" />
-  <span id="folderCrumb">位置：<b data-folder="">全部</b></span>
   <span id="tagFilter"></span>
   <div class="spacer"></div>
   <button class="btn-ghost btn-sm" id="missingBtn" title="默认隐藏磁盘上已删除的文件；点击可显示（便于找回其备注）">👻 显示已失效</button>
@@ -225,7 +223,6 @@
     <button class="btn-ghost btn-sm" id="reportBtn">📄 导出报告</button>
     <button class="btn-ghost btn-sm" id="transcribeSelBtn">🎙 转写选中</button>
     <button class="btn-ghost btn-sm" id="ocrSelBtn">🖼 识别选中图片</button>
-    <button class="btn-ghost btn-sm" id="clearSelBtn">清空</button>
   </div>
 </div>
 
@@ -266,9 +263,18 @@
 
   <!-- 右：详情 -->
   <div class="col right" id="detailCol">
-    <div class="col-title">详情 / 预览</div>
+    <div id="detailHead">
+      <div class="col-title" style="position:static;border-bottom:none;display:flex;align-items:center;justify-content:space-between">
+        <span>详情 / 预览</span>
+        <span style="display:flex;gap:4px">
+          <button class="btn-ghost btn-sm" id="navPrev" title="上一个（←）">⬅</button>
+          <button class="btn-ghost btn-sm" id="navNext" title="下一个（→）">➡</button>
+        </span>
+      </div>
+      <div id="detailActionBar"></div>
+    </div>
     <div class="detail-body" id="detail">
-      <div class="empty">← 在中间清单点击一个文件查看详情与预览</div>
+      <div class="empty">← 在文件列表中点击一个文件查看预览并编辑信息</div>
     </div>
   </div>
 </div>

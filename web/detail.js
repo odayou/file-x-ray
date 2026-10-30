@@ -1,7 +1,7 @@
 // 右侧详情面板：预览/文字稿/保存/OCR转写按钮
 // ---------- 详情 ----------
 async function selectFile(id, path){
-  state.currentId=id;
+  state.currentId=id; saveState();
   document.querySelectorAll('tr.row').forEach(tr=>tr.classList.toggle('active', parseInt(tr.dataset.id)===id));
   let d;
   try{ d=await apiGet('/api/file/'+id); }catch(e){ toast('加载失败: '+e.message); return; }
@@ -28,6 +28,13 @@ function renderDetail(d){
 
   const statusOpts=state.statuses.map(s=>`<option ${s.label===d.status?'selected':''}>${esc(s.label)}</option>`).join('');
   const tagsHtml=(d.tags||[]).map(t=>`<span class="tg" data-tag="${esc(t)}">#${esc(t)}<span data-x="1">✕</span></span>`).join('');
+  // 常驻操作条（悬浮在详情栏顶部）：保存 / 校对 / 打开文件夹 / 选择 / 新窗口
+  document.getElementById('detailActionBar').innerHTML=`
+    <button class="btn-primary btn-sm" id="saveDetail" title="保存备注/状态/标签/文字稿">💾 保存</button>
+    ${(d.category==='image'||d.category==='pdf')?'<button class="btn-ghost btn-sm" id="proofBtn">🔍 校对</button>':''}
+    <button class="btn-ghost btn-sm" id="openFolder">📂 打开文件夹</button>
+    <button class="btn-ghost btn-sm" id="toggleSel">${state.selection.has(d.id)?'移出选择':'加入选择'}</button>
+    <a class="btn-ghost btn-sm" style="text-decoration:none; border-radius: 6px;" href="${rawWithToken(d)}" target="_blank">新窗口打开</a>`;
   document.getElementById('detail').innerHTML=`
     <div class="preview">${preview}</div>
     <div class="meta-row"><b>名称</b><span>${esc(d.name)}</span></div>
@@ -41,16 +48,7 @@ function renderDetail(d){
     <div class="tagchips" id="detailTags" style="margin-bottom:4px">${tagsHtml||'<span style="color:#cbd5e1;font-size:12px">暂无标签</span>'}</div>
     <input id="addTagInput" placeholder="输入标签后回车，如 旅行 / 待翻译" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:6px" />
     <label class="fld">备注</label>
-    <textarea id="detailNote" placeholder="给这个文件写备注…">${esc(d.note)}</textarea>
-    <div class="detail-actions">
-      <button class="btn-primary btn-sm" id="saveDetail">保存备注/状态/标签</button>
-      <button class="btn-ghost btn-sm" id="navPrev" title="上一个（←）">⬅ 上一个</button>
-      <button class="btn-ghost btn-sm" id="navNext" title="下一个（→）">下一个 ➡</button>
-      ${(d.category==='image'||d.category==='pdf')?'<button class="btn-ghost btn-sm" id="proofBtn">🔍 校对模式</button>':''}
-      <button class="btn-ghost btn-sm" id="openFolder">打开所在文件夹</button>
-      <button class="btn-ghost btn-sm" id="toggleSel">${state.selection.has(d.id)?'移出选择':'加入选择'}</button>
-      <a class="btn-ghost btn-sm" style="text-decoration:none" href="${rawWithToken(d)}" target="_blank">新窗口打开</a>
-    </div>`;
+    <textarea id="detailNote" placeholder="给这个文件写备注…">${esc(d.note)}</textarea>`;
   const save=async()=>{
     const tags=Array.from(document.querySelectorAll('#detailTags .tg')).map(x=>x.dataset.tag);
     const payload={note:document.getElementById('detailNote').value,
@@ -162,6 +160,10 @@ function detailNavIds(){
 async function navDetail(dir){
   const ids=detailNavIds();
   if(!ids.length) return;
+  if(state.currentId==null){                  // 尚未选中：→ 选第一个，← 选最后一个
+    await selectFile(dir>0 ? ids[0] : ids[ids.length-1]);
+    return;
+  }
   const ni=ids.indexOf(state.currentId)+dir;
   if(ni<0){                                   // 本页第一个再往前 → 上一页最后一个
     if(state.page>1){

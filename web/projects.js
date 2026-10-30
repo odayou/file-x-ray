@@ -9,63 +9,45 @@ async function loadProjects(){
 
 function projName(pid){
   const p=state.projects.find(x=>x.id===(pid||0));
-  return p?p.name:'全部文件';
+  return p?p.name:'扫描过的所有文件';
 }
 
 function renderProjectSel(){
   const el=document.getElementById('projectSel');
-  // 项目被删除后自动回落到“全部文件”
+  // 项目被删除后自动回落到“全部项目”
   if(state.project && !state.projects.some(p=>p.id===state.project)) state.project=0;
-  el.innerHTML='<option value="0">📁 全部文件</option>'+
+  el.innerHTML='<option value="0">🗂 扫描过的所有文件</option>'+
     state.projects.map(p=>{
       const r0=(p.roots||[])[0]||'';
       return `<option value="${p.id}">${esc(p.name)}（${p.file_count}）${r0?' — '+esc(shortPath(r0)):''}</option>`;
     }).join('');
   el.value=String(state.project);
-  renderProjRootBar();
 }
 
-// 路径太长时保留头尾，中间省略（尾部目录名通常才是关键信息）
-function shortPath(p){
+// 路径太长时保留头尾，中间省略（尾部目录名通常才是关键信息）；max 控制预算
+function shortPath(p, max){
+  max = max || 36;
   if(!p) return '';
-  if(p.length<=36) return p;
+  if(p.length<=max) return p;
   const sep = p.indexOf('\\')>=0 ? '\\' : '/';
   const parts=p.split(/[\\/]/).filter(Boolean);
   if(parts.length<=2) return p;
-  return parts[0]+sep+'…'+sep+parts.slice(-2).join(sep);
-}
-
-// 工具栏常驻显示：当前项目的根目录路径（点击打开、悬停看全路径、失效时标红）
-function renderProjRootBar(){
-  const el=document.getElementById('projRootBar');
-  const p=state.projects.find(x=>x.id===state.project);
-  if(!p || !(p.roots||[]).length){ el.classList.remove('show'); el.innerHTML=''; el.title=''; return; }
-  const roots=p.roots, infos=p.roots_info||[];
-  const dead=infos.filter(i=>i.exists===false);
-  const txt=roots.length===1 ? shortPath(roots[0]) : shortPath(roots[0])+' 等 '+roots.length+' 个目录';
-  el.innerHTML='📂 '+esc(txt)+(dead.length?' ⚠':'')
-    + ' <button class="btn-ghost btn-sm" id="projRescanBtn" title="重新扫描该项目根目录">🔄 扫描</button>';
-  el.title = (dead.length?'⚠ 有 '+dead.length+' 个目录已失效（被改名或移动过），点「📁 管理项目」可重新定位\n\n':'')
-           + roots.join('\n') + '\n\n点击打开：'+roots[0];
-  el.classList.add('show');
-  el.classList.toggle('dead', dead.length>0);
-  const rb=document.getElementById('projRescanBtn');
-  if(rb) rb.onclick=e=>{ e.stopPropagation(); onProjAction('scan', state.project); };
-  el.onclick=async()=>{
-    if(dead.length && infos[0] && infos[0].exists===false){
-      toast('该目录已失效：'+roots[0]+'（可在「📁 管理项目」里重新定位）'); return;
-    }
-    try{ await apiPost('/api/open',{path:roots[0]}); toast('已打开：'+roots[0]); }
-    catch(e){ toast('打开失败: '+e.message); }
-  };
+  let head=parts[0], tail=[];
+  // 从尾部尽量多取段，直到接近预算
+  for(let i=parts.length-1; i>=1; i--){
+    if((head+tail.join(sep)+parts[i]).length > max-2 && tail.length) break;
+    tail.unshift(parts[i]);
+  }
+  return head+sep+'…'+sep+tail.join(sep);
 }
 
 function switchProject(pid){
   pid=parseInt(pid||0,10)||0;
   state.project=pid;
-  state.page=1; state.folder=''; state.tag='';
+  state.showAll=false;                       // 离开彩蛋视图
+  state.page=1; state.folder=''; state.folderReal=''; state.tag='';
   state.selection.clear(); state.currentId=null;
-  updateSelBar(); renderProjectSel(); updateCrumb();
+  updateSelBar(); renderProjectSel();
   if(document.getElementById('projPanel').classList.contains('open')) renderProjList();
   loadStats(); loadTree(); loadTags(); loadFiles();
 }
@@ -73,7 +55,7 @@ function switchProject(pid){
 function renderProjList(){
   const el=document.getElementById('projList');
   if(!state.projects.length){
-    el.innerHTML='<div class="empty">还没有项目<br>扫描任意目录会自动创建一个<br>也可以点「＋ 新建」直接建立</div>';
+    el.innerHTML='<div class="empty">还没有项目<br>点「＋ 新建」建立并选择根目录后自动扫描</div>';
     return;
   }
   el.innerHTML=state.projects.map(p=>{
@@ -88,7 +70,7 @@ function renderProjList(){
             + ` <button class="root-copy" data-act="copyroot" data-id="${p.id}" data-root="${esc(r)}" title="复制完整路径">复制</button>`
             + `</div>`;
         }).join('')
-      : '<div class="meta">📂 不限制目录（全部文件）</div>';
+      : '<div class="meta">📂 不限制目录（扫描过的所有文件）</div>';
     return `<div class="proj-item ${p.id===state.project?'active':''}">
       <div class="nm">${esc(p.name)}
         <span style="font-weight:400;color:var(--muted)">${p.file_count} 个文件${p.missing_count?'（'+p.missing_count+' 个已失效）':''}</span></div>

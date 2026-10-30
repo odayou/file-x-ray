@@ -12,7 +12,7 @@
   };
 })();
 
-const state = { search:"", status:"all", ext:"", type:"", folder:"", tag:"", page:1, pages:1, pageSize:100, sort:"name",
+const state = { search:"", status:"all", ext:"", type:"", folder:"", folderReal:"", tag:"", page:1, pages:1, pageSize:100, sort:"name", showAll:false,
                 selection:new Set(), currentId:null, statuses:[], whisper:null, ocr:null,
                 project:0, projects:[], showMissing:false };
 let treeData = [];
@@ -36,6 +36,39 @@ function logMsg(msg, isErr){
 }
 
 function toast(msg){ logMsg(msg); const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'),2200); }
+
+// ---------- 现场记忆：localStorage 持久化会话状态，刷新页面自动恢复 ----------
+const FIT_STATE_KEY='fit_state_v1';
+function saveState(){
+  try{ localStorage.setItem(FIT_STATE_KEY, JSON.stringify({
+    project:state.project, folder:state.folder, folderReal:state.folderReal, tag:state.tag,
+    search:state.search, status:state.status, ext:state.ext, type:state.type,
+    showAll:state.showAll, showMissing:state.showMissing, page:state.page,
+    currentId:state.currentId, selection:[...state.selection] })); }catch(e){}
+}
+function restoreState(){
+  try{
+    const s=JSON.parse(localStorage.getItem(FIT_STATE_KEY)||'null');
+    if(!s) return false;
+    Object.assign(state, {
+      project:s.project||0, folder:s.folder||'', folderReal:s.folderReal||'', tag:s.tag||'',
+      search:s.search||'', status:s.status||'all', ext:s.ext||'', type:s.type||'',
+      showAll:!!s.showAll, showMissing:!!s.showMissing, page:s.page||1,
+      currentId:s.currentId||null });
+    state.selection=new Set(s.selection||[]);
+    // 恢复输入控件（statusFilter 的选项是异步加载的，在其完成后单独回填）
+    document.getElementById('searchInput').value=state.search;
+    document.getElementById('typeFilter').value=state.type||'';
+    if(state.type==='_custom'){
+      const ef=document.getElementById('extFilter');
+      ef.style.display=''; ef.value=state.ext;
+    }
+    const b=document.getElementById('missingBtn');
+    b.textContent=state.showMissing?'👻 隐藏已失效':'👻 显示已失效';
+    b.classList.toggle('btn-primary', state.showMissing);
+    return true;
+  }catch(e){ return false; }
+}
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function humanSize(b){ if(b==null) return ''; const u=['B','KB','MB','GB','TB']; let i=0,n=b; while(n>=1024&&i<u.length-1){n/=1024;i++;} return (i?n.toFixed(1):n)+' '+u[i]; }
 function fmtDate(ts){ if(!ts) return ''; return new Date(ts*1000).toLocaleString('zh-CN'); }
