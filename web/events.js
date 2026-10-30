@@ -37,7 +37,13 @@ document.addEventListener('keydown',e=>{
 
 document.getElementById('selectAll').onchange=e=>{
   const chk=e.target.checked;
-  document.querySelectorAll('tr.row').forEach(tr=>{ const id=parseInt(tr.dataset.id); if(chk)state.selection.add(id); else state.selection.delete(id); tr.classList.toggle('sel',chk); tr.querySelector('.rowchk').checked=chk; });
+  document.querySelectorAll('tr.row').forEach(tr=>{
+    if(tr.classList.contains('dir-row')) return;          // 目录行不可勾选，跳过
+    const id=parseInt(tr.dataset.id);
+    if(chk)state.selection.add(id); else state.selection.delete(id);
+    tr.classList.toggle('sel',chk);
+    const c=tr.querySelector('.rowchk'); if(c)c.checked=chk;
+  });
   updateSelBar();
 };
 document.getElementById('prevPage').onclick=()=>{ if(state.page>1){ state.page--; loadFiles(); } };

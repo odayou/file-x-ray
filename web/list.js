@@ -82,10 +82,23 @@ function renderList(r){
   else{
     tb.innerHTML=r.items.map(it=>{
       const c=statusColor(it.status);
+      const isDir=!!it.is_dir;
       const sel=state.selection.has(it.id)?'sel':'';
       const act=state.currentId===it.id?'active':'';
       const note=it.note?esc(it.note):'<span style="color:#cbd5e1">—</span>';
       const tags=tagChipsHtml(it.tags);
+      if(isDir){
+        // 目录行：一等实体，点击钻取（而非预览）；无勾选框（不参与导出/OCR/转写）
+        return `<tr class="row dir-row ${act}" data-id="${it.id}" data-path="${esc(it.path)}" data-rel="${esc(it.rel_path)}">
+          <td></td>
+          <td class="name-cell">📁 ${esc(it.name)}</td>
+          <td class="type-ic">目录</td>
+          <td>—</td>
+          <td class="type-ic">${fmtDate(it.mtime)}</td>
+          <td><span class="badge" style="background:${c}">${esc(it.status)}</span></td>
+          <td class="note-snip">${note}${tags}</td>
+        </tr>`;
+      }
       return `<tr class="row ${sel} ${act}" data-id="${it.id}" data-path="${esc(it.path)}">
         <td><input type="checkbox" class="rowchk" ${state.selection.has(it.id)?'checked':''}></td>
         <td class="name-cell">${esc(it.name)}${it.pending_kind?'<span class="badge-pending">待确认</span>':''}</td>
@@ -98,8 +111,17 @@ function renderList(r){
     }).join('');
   }
   tb.querySelectorAll('tr.row').forEach(tr=>{
-    tr.querySelector('.rowchk').onclick=e=>{ e.stopPropagation(); toggleSelect(parseInt(tr.dataset.id)); };
-    tr.onclick=()=>selectFile(parseInt(tr.dataset.id), tr.dataset.path);
+    if(tr.classList.contains('dir-row')){
+      tr.onclick=()=>{
+        state.folder=tr.dataset.rel; state.folderReal=tr.dataset.path; state.page=1;
+        ancestorsOf(state.folder).forEach(x=>treeExpanded.add(x));   // 同步左侧树展开到当前位置
+        renderTree(); loadFiles();
+      };
+    }else{
+      const chk=tr.querySelector('.rowchk');
+      if(chk) chk.onclick=e=>{ e.stopPropagation(); toggleSelect(parseInt(tr.dataset.id)); };
+      tr.onclick=()=>selectFile(parseInt(tr.dataset.id), tr.dataset.path);
+    }
   });
   const total=r.total, ps=state.pageSize;
   state.pages=Math.max(1,Math.ceil(total/ps));

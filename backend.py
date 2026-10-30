@@ -336,6 +336,11 @@ def init_db():
         c.execute("ALTER TABLE files ADD COLUMN pending_kind TEXT DEFAULT ''")
     except Exception:
         pass
+    # 物化目录：把目录也作为 files 表中的一等实体（is_dir=1），空目录也会成为节点/可标注
+    try:
+        c.execute("ALTER TABLE files ADD COLUMN is_dir INTEGER DEFAULT 0")
+    except Exception:
+        pass
     c.execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_files_parent ON files(parent)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_files_status ON files(status)")
@@ -727,6 +732,26 @@ def scan_worker(root, max_depth, scan_id, project_id=None):
             depth = dirpath[len(root):].count(os.sep)
             if max_depth is not None and depth >= max_depth:
                 dirnames[:] = []
+            # 物化目录为 files 表中的一等实体（is_dir=1）：空目录也作为节点出现，且可被打标签/备注。
+            # 按路径 upsert：目录改名/移动后旧行保留（missing=1），若路径日后恢复则自动对应旧标注（小彩蛋）
+            try:
+                st_dir = os.stat(dirpath)
+                rel_d = "" if dirpath == root else os.path.relpath(dirpath, root)
+                rel_d = rel_d.replace(os.sep, "/")
+                parent_d = rel_d.rsplit("/", 1)[0] if "/" in rel_d else ""
+                name_d = os.path.basename(dirpath)
+                if conn.execute("SELECT 1 FROM files WHERE path=?", (dirpath,)).fetchone():
+                    conn.execute(
+                        "UPDATE files SET rel_path=?,name=?,parent=?,mtime=?,depth=?,indexed_at=?,missing=0,is_dir=1 WHERE path=?",
+                        (rel_d, name_d, parent_d, st_dir.st_mtime, depth, time.time(), dirpath))
+                else:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO files(path,rel_path,name,ext,parent,size,mtime,depth,"
+                        "status,note,tags,content,indexed_at,is_dir) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
+                        (dirpath, rel_d, name_d, "", parent_d, 0, st_dir.st_mtime, depth,
+                         "未处理", "", "", "", time.time()))
+            except Exception:
+                pass
             for fn in filenames:
                 full = os.path.join(dirpath, fn)
                 try:
@@ -945,6 +970,9 @@ def _build_where(search, status, ext, folder, tag, force_like=False, scope=None,
         params += list(scope[1])
     if not include_missing:
         conds.append("(missing IS NULL OR missing=0)")
+    # 列表/搜索中隐藏“根目录自身”这一行：它只是当前浏览起点，点它钻取等于原地不动，
+    # 目录树里已经展示了根；同时避免多根项目里每个根在列表里重复成一行。
+    conds.append("NOT (is_dir=1 AND rel_path='')")
     if search:
         if FTS_OK and not force_like and len(search.strip()) >= FTS_MIN_LEN:
             conds.append("id IN (SELECT rowid FROM files_fts WHERE files_fts MATCH ?)")
@@ -961,12 +989,13 @@ def _build_where(search, status, ext, folder, tag, force_like=False, scope=None,
     if exts:
         conds.append("ext IN (%s)" % ",".join("?" * len(exts)))
         params += exts
-    if folder:
-        # 仅展示该文件夹“直接包含”的文件：精确匹配 parent。
-        # 树/UI 传正斜杠路径，库内存贮用 OS 分隔符（Windows 为反斜杠），先归一化
-        fbs = folder.replace("/", os.sep)
-        conds.append("parent=?")
-        params.append(fbs)
+    # 仅展示该文件夹“直接包含”的子项：精确匹配 parent。
+    # folder 为空字符串表示“根目录本级”（parent=''），非空表示对应子目录；
+    # 列表始终只显示“当前目录的直接子项”，配合左侧树形成下钻式浏览（目录行可点击进入）。
+    # 树/UI 传正斜杠路径，库内存贮用 OS 分隔符（Windows 为反斜杠），先归一化
+    fbs = folder.replace("/", os.sep)
+    conds.append("parent=?")
+    params.append(fbs)
     if tag:
         q = "%" + like_escape(tag) + "%"
         conds.append("tags LIKE ? ESCAPE '\\'")
@@ -975,7 +1004,7 @@ def _build_where(search, status, ext, folder, tag, force_like=False, scope=None,
     return where, params, used_fts
 
 SELECT_COLS = ("id,path,rel_path,name,ext,parent,size,mtime,depth,status,note,tags,"
-               "transcript,transcribed_at,pending_kind")
+               "transcript,transcribed_at,pending_kind,is_dir")
 
 @app.get("/")
 def index():
@@ -1317,6 +1346,7 @@ def scan_progress(sid: str):
 def stats(project: int = 0):
     conn = get_db()
     scope = project_scope(conn, project)
+    # 目录（is_dir=1）也是一等实体，统计一并计入（与列表“共 N 条”对齐）
     base = "WHERE 1=1" + ((" AND " + scope[0]) if scope[0] else "")
     sp = list(scope[1])
     total = conn.execute(f"SELECT COUNT(*) FROM files {base}", sp).fetchone()[0]
@@ -1336,8 +1366,12 @@ def stats(project: int = 0):
         if r["ext"] in img_set and not (t.startswith("[识别失败]") or t.startswith("[转写失败]")):
             ocr_count += 1
     by_ext = []
-    for r in conn.execute(f"SELECT ext, COUNT(*) c FROM files {base} GROUP BY ext ORDER BY c DESC LIMIT 15", sp):
-        by_ext.append({"ext": r[0] or "(无扩展名)", "count": r[1]})
+    for r in conn.execute(
+            f"SELECT (CASE WHEN is_dir=1 THEN '📁目录' ELSE COALESCE(ext,'') END) AS k, COUNT(*) c "
+            f"FROM files {base} GROUP BY k ORDER BY c DESC LIMIT 15", sp):
+        k = r["k"]
+        label = "📁目录" if k == "📁目录" else (k or "(无扩展名)")
+        by_ext.append({"ext": label, "count": r["c"]})
     missing = conn.execute(f"SELECT COUNT(*) FROM files {base} AND missing=1", sp).fetchone()[0]
     conn.close()
     return {"total": total, "by_status": by_status, "tagged": tagged,
@@ -1354,10 +1388,19 @@ def get_tree(depth: int = 99, project: int = 0):
          ((" AND " + scope[0]) if scope[0] else ""))
     folders = {}
     real_map = {}                                   # 相对目录 -> 真实绝对目录（沿文件祖先链一对一映射）
-    for r in conn.execute(f"SELECT path, rel_path FROM files {w}", list(scope[1])).fetchall():
+    for r in conn.execute(f"SELECT path, rel_path, is_dir FROM files {w}", list(scope[1])).fetchall():
         rel = rel_for(r["path"], roots)
         if rel is None:
             rel = (r["rel_path"] or "").replace("\\", "/")
+        if r["is_dir"]:
+            # 目录本身即一个文件夹节点（含空目录）：自身与各级祖先都注册，保证层级连续
+            if rel:
+                folders.setdefault(rel, 0)
+                parts = rel.split("/")
+                for k in range(1, len(parts)):
+                    folders.setdefault("/".join(parts[:k]), 0)
+                real_map.setdefault(rel, r["path"])
+            continue
         parts = rel.split("/") if rel else []
         # 注册路径上的每一级祖先目录（含直接父目录）：即便某层目录没有直接文件，
         # 只要更深层有文件，它也应作为树节点出现，否则层级/缩进会错位
@@ -1416,7 +1459,7 @@ def list_files(search: str = "", status: str = "all", ext: str = "", folder: str
                                include_missing=inc_missing, ftype=ftype)
         t = conn.execute(f"SELECT COUNT(*) FROM files {w}", p).fetchone()[0]
         rr = conn.execute(
-            f"SELECT {SELECT_COLS} FROM files {w} ORDER BY {order} LIMIT ? OFFSET ?",
+            f"SELECT {SELECT_COLS} FROM files {w} ORDER BY is_dir DESC, {order} LIMIT ? OFFSET ?",
             p + [page_size, offset]).fetchall()
         return t, rr, u
 
@@ -1475,9 +1518,11 @@ def file_detail(fid: int):
         conn.close()
         raise HTTPException(404, "未找到文件")
     d = dict(r)
-    cat = categorize(d["ext"])
+    is_dir = bool(d.get("is_dir") or 0)
+    d["is_dir"] = is_dir
+    cat = "dir" if is_dir else categorize(d["ext"])
     # 清单外但内容为纯文本的扩展名（嗅探判定）：详情中同样支持预览
-    if cat == "other" and d["path"] and os.path.isfile(d["path"]) and sniff_text(d["path"]):
+    if not is_dir and cat == "other" and d["path"] and os.path.isfile(d["path"]) and sniff_text(d["path"]):
         cat = "text"
     d["category"] = cat
     d["raw_url"] = f"/api/raw/{fid}"
@@ -1491,7 +1536,7 @@ def file_detail(fid: int):
             preview = ""
     d["preview_text"] = preview if cat == "text" else ""
     d["tags"] = parse_tags(d["tags"])
-    d["exists"] = os.path.isfile(d["path"])
+    d["exists"] = os.path.isfile(d["path"]) or os.path.isdir(d["path"])
     d["missing"] = bool(d.get("missing") or 0)
     d["color"] = status_color(d["status"])
     d["transcript"] = d.get("transcript") or ""

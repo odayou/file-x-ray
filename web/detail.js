@@ -17,8 +17,10 @@ function rawWithToken(d){
 }
 
 function renderDetail(d){
+  const isDir=!!d.is_dir;
   let preview='';
-  if(!d.exists){ preview='<div class="ph">⚠ 原文件不存在或已被移动/删除<br>'+esc(d.path)+'</div>'; }
+  if(isDir){ preview='<div class="ph">📁 目录<br>目录也是一等实体：可像文件一样打标签、写备注、设状态，并能被搜索</div>'; }
+  else if(!d.exists){ preview='<div class="ph">⚠ 原文件不存在或已被移动/删除<br>'+esc(d.path)+'</div>'; }
   else if(d.category==='image'){ preview=`<img src="${rawWithToken(d)}" alt="preview">`; }
   else if(d.category==='video'){ preview=`<video controls src="${rawWithToken(d)}"></video>`; }
   else if(d.category==='audio'){ preview=`<audio controls src="${rawWithToken(d)}" style="width:100%;margin-top:80px"></audio>`; }
@@ -31,17 +33,17 @@ function renderDetail(d){
   // 常驻操作条（悬浮在详情栏顶部）：保存 / 校对 / 打开文件夹 / 选择 / 新窗口
   document.getElementById('detailActionBar').innerHTML=`
     <button class="btn-primary btn-sm" id="saveDetail" title="保存备注/状态/标签/文字稿">💾 保存</button>
-    ${(d.category==='image'||d.category==='pdf')?'<button class="btn-ghost btn-sm" id="proofBtn">🔍 校对</button>':''}
-    <button class="btn-ghost btn-sm" id="openFolder">📂 打开文件夹</button>
-    <button class="btn-ghost btn-sm" id="toggleSel">${state.selection.has(d.id)?'移出选择':'加入选择'}</button>
-    <a class="btn-ghost btn-sm" style="text-decoration:none; border-radius: 6px;" href="${rawWithToken(d)}" target="_blank">新窗口打开</a>`;
+    ${(!isDir && (d.category==='image'||d.category==='pdf'))?'<button class="btn-ghost btn-sm" id="proofBtn">🔍 校对</button>':''}
+    <button class="btn-ghost btn-sm" id="openFolder">📂 ${isDir?'打开此目录':'打开文件夹'}</button>
+    ${isDir?'':`<button class="btn-ghost btn-sm" id="toggleSel">${state.selection.has(d.id)?'移出选择':'加入选择'}</button>
+    <a class="btn-ghost btn-sm" style="text-decoration:none; border-radius: 6px;" href="${rawWithToken(d)}" target="_blank">新窗口打开</a>`}`;
   document.getElementById('detail').innerHTML=`
     <div class="preview">${preview}</div>
     <div class="meta-row"><b>名称</b><span>${esc(d.name)}</span></div>
     <div class="meta-row"><b>路径</b><span style="word-break:break-all">${esc(d.path)}</span></div>
-    <div class="meta-row"><b>大小</b><span>${humanSize(d.size)}</span><b>类型</b><span>${esc(d.ext||'')}</span></div>
+    <div class="meta-row"><b>大小</b><span>${isDir?'—':humanSize(d.size)}</span><b>类型</b><span>${isDir?'目录':esc(d.ext||'')}</span></div>
     <div class="meta-row"><b>修改</b><span>${fmtDate(d.mtime)}</span><b>层级</b><span>${d.depth}</span></div>
-    ${mediaBlock(d)}
+    ${isDir?'':mediaBlock(d)}
     <label class="fld">状态</label>
     <select class="status-sel" id="detailStatus">${statusOpts}</select>
     <label class="fld">主题标签（回车添加，可多个）</label>
