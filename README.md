@@ -15,13 +15,16 @@ pip install -r requirements.txt
 # requirements.txt 已含：fastapi uvicorn faster-whisper pymupdf pytesseract pillow
 ```
 
-**额外系统依赖（OCR 用）**：
+**OCR 引擎（三级优先，扫描件 PDF 开箱即用）**：
 
-- **推荐（中文识别更强）**：安装 [Umi-OCR](https://github.com/hiroi-sora/Umi-OCR)，启动其「HTTP 接口」后本工具会自动优先调用它。
-- **轻量兜底**：安装系统 `tesseract`（含中文包 `chi_sim`）。
-  - Windows：`pip install tesseract` 不行，需到 [UB-Mannheim](https://github.com/UB-Mannheim/tesseract/wiki) 下载安装，并把 `tesseract.exe` 所在目录加入 PATH；中文包随安装勾选或单独下载 `chi_sim.traineddata` 放到 tessdata 目录。
-  - Debian/Ubuntu：`sudo apt install tesseract-ocr tesseract-ocr-chi-sim`
-  - macOS：`brew install tesseract tesseract-lang`
+1. **浏览器内置 OCR（零安装兜底）**：程序自带 tesseract.js WASM 引擎与中英文语言包（约 14MB，位于 `web/vendor/tesseract/`），**扫描件 PDF 无需安装任何东西即可识别**——与 Edge 端侧 OCR 思路一致：模型随程序分发、在浏览器里运行。
+2. **推荐升级（中文更强更快）**：安装 [Umi-OCR](https://github.com/hiroi-sora/Umi-OCR)，启动其「HTTP 接口」后本工具自动优先调用。
+3. **轻量原生兜底**：安装系统 `tesseract`（含中文包 `chi_sim`）。
+   - Windows：`pip install tesseract` 不行，需到 [UB-Mannheim](https://github.com/UB-Mannheim/tesseract/wiki) 下载安装，并把 `tesseract.exe` 所在目录加入 PATH。
+   - Debian/Ubuntu：`sudo apt install tesseract-ocr tesseract-ocr-chi-sim`
+   - macOS：`brew install tesseract tesseract-lang`
+
+> 分工说明：**扫描件 PDF** 用任何一级引擎都能识别（浏览器内置兜底保证零安装）；**图片 OCR** 需要本机装有 Umi-OCR 或 tesseract（浏览器内置引擎暂不覆盖图片）。
 
 启动：
 
@@ -132,7 +135,7 @@ python backend.py
 
 ### 图片 OCR（图中文字 → 可搜索）
 
-- **引擎优先级**：默认 `auto`——先尝试本机已启动的 **Umi-OCR HTTP 接口**（中文识别更强、开箱即用），不可用时自动回退到本地 **tesseract**。可用 `FIT_OCR_ENGINE=umi` / `tesseract` 强制指定。
+- **引擎优先级**：默认 `auto`——先尝试本机已启动的 **Umi-OCR HTTP 接口**（中文识别更强、开箱即用），不可用时自动回退到本地 **tesseract**。可用 `FIT_OCR_ENGINE=umi` / `tesseract` 强制指定。图片 OCR 需本机装有其一（浏览器内置引擎仅覆盖扫描件 PDF）。
 - **Umi-OCR 接入**：下载运行 [Umi-OCR](https://github.com/hiroi-sora/Umi-OCR)，在「全局设置 → 开启 HTTP 服务」后，本工具即可通过 `http://127.0.0.1:1224/api/ocr` 调用；语言由 `FIT_OCR_LANGS` 映射（如 `chi_sim+eng` → `ch_and_en`）。
 - **tesseract 兜底**：需系统安装 tesseract 及 `chi_sim`（中文）语言包（见上方安装说明）。
 - **触发**：右栏选中图片点「🖼 识别图中文字」，或勾选多个后点工具栏「🖼 识别选中图片」批量识别；非图片自动跳过。
@@ -155,6 +158,7 @@ OCR 与转写都遵循同一条规则：**已有旧内容时，新结果绝不�
 
 - **有文字层的 PDF**：扫描时**自动**用 PyMuPDF（回退 pypdf / pdfminer）抽取文字层，写入索引的 `content` 字段，无需手动操作。
 - **扫描件 / 无文字层 PDF**：扫描只做快速的文字层抽取，**扫描结束后**自动在后台对无文字的 PDF 逐个「渲染每页 → OCR」，进度在 OCR 浮层实时显示（可点「转入后台」，完成时自动提示）。结果同样写入 `content`。
+- **零安装兜底**：本机没有任何 OCR 引擎时，程序自带的**浏览器内置 OCR**（tesseract.js WASM，随 exe 分发）会接管扫描件 PDF 的识别——后端把每页渲染成图片，浏览器 Worker 里逐页识别后回传入库。速度比原生引擎慢（单页约 1~3 秒），装 Umi-OCR 后自动切回原生引擎。
 - **存量补识别**：先扫描、后装引擎也没关系——装好后顶栏徽标变为「OCR ✓ · N 待识别」，点击即可对全部存量扫描件一键批量补识别；每次扫描结束也会自动补齐。
 - **文字来源标记**：右栏 PDF 文字会标注来源——`文字层精确抽取` / `OCR 识别（建议校对）` / `人工校对`；OCR 结果附「🔍 对照原文校对」一键进入校对模式（左侧原文右侧文字并排修改）。
 - **没有装 OCR 引擎时**：不会报错，只是扫描件 PDF 抽不到文字；此时右栏会显示黄色安装引导，顶栏的「OCR ✕ 未启用」徽标也可点击查看按系统（Windows / macOS / Linux）对应的安装步骤。
@@ -186,6 +190,8 @@ pyinstaller build.spec 或 python -m PyInstaller build.spec
 file-index-tool/
 ├── backend.py        # FastAPI 后端：扫描/搜索/预览/打开文件夹/打包 + 转写(faster-whisper) + OCR(Umi-OCR/tesseract) + PDF 提取
 ├── index.html        # 前端单页（内联 CSS/JS，无需构建）
+├── web/              # 前端 JS 模块
+│   └── vendor/tesseract/   # 浏览器内置 OCR：tesseract.js WASM 核心 + 中英文语言包（随包离线可用）
 ├── requirements.txt  # Python 依赖
 ├── build.spec        # PyInstaller 打包配置（Windows exe）
 ├── file_index.db     # 首次运行自动生成（已加入 .gitignore）

@@ -23,30 +23,64 @@ async function pollTranscribe(jid){
   await loadStats(); await loadFiles();
 }
 
-// ---------- OCR（图片/扫描件PDF -> 文字，Umi-OCR 优先 + tesseract 兜底） ----------
+// ---------- OCR（图片/扫描件PDF -> 文字；引擎优先级：Umi-OCR > tesseract > 浏览器内置WASM） ----------
 async function startOcr(ids){
-  // 引擎未就绪：直接给出跨平台安装引导，不再空跑请求
-  if(!state.ocr || !state.ocr.available){
-    const g=(state.ocr && state.ocr.install_guide) || '请先安装 Tesseract OCR 或 Umi-OCR（开启 HTTP 接口）';
-    toast('当前环境未启用 OCR 引擎，无法识别');
-    showOcrGuide(g);
+  // 1) 后端引擎可用：走原生批量任务（最快）
+  if(state.ocr && state.ocr.available){
+    let jid;
+    try{ const r=await apiPost('/api/ocr',{ids}); jid=r.job_id; }
+    catch(e){ toast('启动识别失败: '+e.message); return; }
+    document.getElementById('ocrOverlay').classList.add('show');
+    pollOcr(jid);
     return;
   }
-  let jid;
-  try{ const r=await apiPost('/api/ocr',{ids}); jid=r.job_id; }
-  catch(e){ toast('启动识别失败: '+e.message); return; }
-  document.getElementById('ocrOverlay').classList.add('show');
-  pollOcr(jid);
+  // 2) 无后端引擎但浏览器内置 OCR 就绪：PDF 走浏览器识别（零安装兜底）
+  if(WasmOcr.available()){
+    let pdfIds;
+    try{
+      const r=await apiPost('/api/ocr/pdf_ids',{ids});
+      pdfIds=r.ids;
+      if(r.skipped) toast(r.skipped+' 个非 PDF 文件已跳过（图片识别需安装 Umi-OCR / tesseract）');
+    }catch(e){ toast('筛选失败: '+e.message); return; }
+    if(!pdfIds.length){ toast('所选文件中没有 PDF'); return; }
+    runBrowserBacklog(pdfIds);
+    return;
+  }
+  // 3) 都没有：给出跨平台安装引导
+  const g=(state.ocr && state.ocr.install_guide) || '请先安装 Tesseract OCR 或 Umi-OCR（开启 HTTP 接口）';
+  toast('当前环境未启用 OCR 引擎，无法识别');
+  showOcrGuide(g);
 }
 
-// 顶栏常驻 OCR 状态徽标：可用性 + 扫描件待识别数（一键补识别入口）
+// 浏览器内置 OCR：批量补识别（无后端引擎时的零安装路径）
+async function runBrowserBacklog(ids){
+  if(!ids || !ids.length) return;
+  document.getElementById('ocrOverlay').classList.add('show');
+  document.getElementById('ocrNum').textContent='0 / '+ids.length;
+  let done=0;
+  for(let k=0;k<ids.length;k++){
+    const nm=(state.ocrPending&&state.ocrPending.names)||[];
+    document.getElementById('ocrCur').textContent='当前: '+(nm[k]||('#'+ids[k]));
+    try{ await WasmOcr.ocrPdf(ids[k]); }
+    catch(e){ /* 单个失败不中断整批，稍后仍会留在待识别池 */ }
+    done++;
+    document.getElementById('ocrNum').textContent=done+' / '+ids.length;
+  }
+  document.getElementById('ocrOverlay').classList.remove('show');
+  toast('浏览器内置 OCR 完成，共处理 '+ids.length+' 个 PDF');
+  if(state.currentId) selectFile(state.currentId);
+  await loadStats(); await loadFiles();
+  refreshOcrBadge();
+}
+
+// 顶栏常驻 OCR 状态徽标：可用性（原生引擎/浏览器内置）+ 扫描件待识别数（一键补识别入口）
 let _ocrPendingToasted=false;
 async function refreshOcrBadge(){
   let r;
   try{ r=await apiGet('/api/ocr/check'); }catch(e){ r={available:false}; }
   state.ocr=r;
   updateOcrBadge(r);
-  if(r && r.available){
+  if((r && r.available) || WasmOcr.available()){
     let p=null;
     try{ p=await apiGet('/api/ocr/pending'); }catch(e){}
     applyOcrPending(p);
@@ -60,6 +94,12 @@ function updateOcrBadge(r){
     b.className='ocr-badge ok';
     b.title='OCR 引擎已就绪（Umi-OCR 优先 / tesseract 兜底）';
     b.onclick=null;
+  }else if(WasmOcr.available()){
+    b.textContent='OCR ✓ 浏览器内置';
+    b.className='ocr-badge ok';
+    b.title='使用随程序内置的浏览器 OCR，可直接识别扫描件 PDF（无需安装）。\n安装 Umi-OCR 可获得更高识别精度与速度。';
+    b.onclick=()=>showOcrGuide('当前使用浏览器内置 OCR，扫描件 PDF 已可直接识别。\n\n如需更高精度/更快速度（尤其图片 OCR），可另装：\n'
+                               + ((r&&r.install_guide)||'Umi-OCR / Tesseract'));
   }else{
     b.textContent='OCR ✕ 未启用';
     b.className='ocr-badge warn';
@@ -69,16 +109,19 @@ function updateOcrBadge(r){
 }
 function applyOcrPending(p){
   const b=document.getElementById('ocrBadge');
-  if(!b || !(state.ocr&&state.ocr.available)) return;
-  state.ocrPending=p||{count:0,ids:[]};
+  if(!b) return;
+  const native=(state.ocr&&state.ocr.available);
+  if(!native && !WasmOcr.available()) return;
+  state.ocrPending=p||{count:0,ids:[],names:[]};
   const n=state.ocrPending.count||0;
   if(n>0){
     b.textContent='OCR ✓ · '+n+' 待识别';
-    b.title='检测到 '+n+' 个扫描件 PDF 尚未识别，点击开始批量 OCR';
+    b.title='检测到 '+n+' 个扫描件 PDF 尚未识别，点击开始批量 OCR'
+            +(native?'':'（使用浏览器内置 OCR，逐页识别较慢）');
     b.onclick=()=>{
       const ids=(state.ocrPending&&state.ocrPending.ids)||[];
       if(!ids.length) return;
-      if(confirm('对 '+ids.length+' 个扫描件 PDF 批量 OCR 识别？\n（在后台逐个执行，进度实时显示）'))
+      if(confirm('对 '+ids.length+' 个扫描件 PDF 批量 OCR 识别？\n（逐个执行，进度实时显示，可转入后台）'))
         startOcr(ids);
     };
     if(!_ocrPendingToasted){
@@ -86,7 +129,7 @@ function applyOcrPending(p){
       toast('检测到 '+n+' 个扫描件 PDF 未识别，点击顶栏「OCR 徽标」可批量补识别');
     }
   }else{
-    b.textContent='OCR ✓ 已启用';
+    b.textContent=native?'OCR ✓ 已启用':'OCR ✓ 浏览器内置';
     b.onclick=null;
   }
 }

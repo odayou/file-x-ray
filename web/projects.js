@@ -168,10 +168,16 @@ async function pollProjectScan(sids){
   document.getElementById('scanOverlay').classList.remove('show');
   toast('项目扫描完成，共 '+total.toLocaleString()+' 个文件');
   await loadProjects(); await loadStats(); await loadTree(); await loadTags(); await loadFiles();
-  // 扫描触发的扫描件 PDF 后台补识别：接着展示其进度（不阻塞，可随时关闭页面看结果）
+  // 扫描触发的扫描件 PDF 后台补识别：原生引擎任务接着展示进度；
+  // 无原生引擎但浏览器内置 OCR 可用时，由前端驱动批量补识别
   if(ocrJob){
     document.getElementById('ocrOverlay').classList.add('show');
     pollOcr(ocrJob);
+  }else if(WasmOcr.available()){
+    try{
+      const p=await apiGet('/api/ocr/pending');
+      if(p && p.count) runBrowserBacklog(p.ids);
+    }catch(e){}
   }
 }
 

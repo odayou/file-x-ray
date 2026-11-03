@@ -6,6 +6,10 @@
 # Tesseract / Umi-OCR 即可。CI 只负责把 Python 程序打包成各平台可执行文件。
 name: Build (win/mac/linux)
 
+# 发布 Release 需要 contents: write（GitHub 默认只给只读 token）
+permissions:
+  contents: write
+
 on:
   push:
     tags: ["v*"]

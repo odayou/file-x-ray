@@ -27,7 +27,7 @@ from collections import Counter
 from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, HTMLResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, HTMLResponse, Response
 
 # ----------------------------------------------------------------------------
 # 配置（兼容 PyInstaller 打包后的运行环境）
@@ -672,6 +672,17 @@ def ocr_is_available():
         return ocr_check()[0]
     except Exception:
         return False
+
+
+# 浏览器内置 OCR（tesseract.js WASM）：随包分发的零安装兜底引擎，仅处理扫描件 PDF
+WASM_OCR_DIR = os.path.join(BASE_DIR, "web", "vendor", "tesseract")
+WASM_OCR_FILES = ("tesseract.min.js", "worker.min.js",
+                  "tesseract-core-simd.wasm.js", "chi_sim.traineddata.gz")
+
+
+def wasm_available():
+    """浏览器内置 OCR 的运行文件是否随包就绪。"""
+    return all(os.path.isfile(os.path.join(WASM_OCR_DIR, f)) for f in WASM_OCR_FILES)
 
 
 def ocr_install_guide():
@@ -1672,7 +1683,13 @@ def file_detail(fid: int):
     d["pending_text"] = d.get("pending_text") or ""
     d["pending_kind"] = d.get("pending_kind") or ""
     d["can_transcribe"] = (d["category"] in ("audio", "video")) and bool(d["exists"])
-    d["can_ocr"] = (d["category"] in ("image", "pdf")) and bool(d["exists"]) and ocr_is_available()
+    # 图片 OCR 需后端引擎；PDF 可用后端引擎或浏览器内置 OCR（零安装兜底）
+    if d["category"] == "image":
+        d["can_ocr"] = bool(d["exists"]) and ocr_is_available()
+    elif d["category"] == "pdf":
+        d["can_ocr"] = bool(d["exists"]) and (ocr_is_available() or wasm_available())
+    else:
+        d["can_ocr"] = False
     d["ocr_langs"] = OCR_LANGS
     d["pdf_text"] = (d.get("content") or "") if d["category"] == "pdf" else ""
     conn.close()
@@ -1688,6 +1705,49 @@ def raw_file(fid: int):
     mt, _ = mimetypes.guess_type(r["path"])
     return FileResponse(r["path"], media_type=mt or "application/octet-stream",
                         filename=r["name"], content_disposition_type="inline")
+
+@app.get("/api/pdf/{fid}/pages")
+def pdf_pages(fid: int):
+    """PDF 总页数（供浏览器内置 OCR 分页拉取）。"""
+    conn = get_db()
+    r = conn.execute("SELECT path FROM files WHERE id=?", (fid,)).fetchone()
+    conn.close()
+    if not r or not os.path.isfile(r["path"]):
+        raise HTTPException(404, "文件缺失或已被删除")
+    try:
+        import fitz
+        doc = fitz.open(r["path"])
+        try:
+            n = doc.page_count
+        finally:
+            doc.close()
+    except Exception as e:
+        raise HTTPException(500, "无法读取 PDF：%s" % e)
+    return {"pages": n}
+
+@app.get("/api/pdf/{fid}/page/{num}")
+def pdf_page_png(fid: int, num: int, dpi: int = 200):
+    """把 PDF 第 num 页（1 起始）渲染成 PNG，供浏览器内置 OCR 逐页识别。"""
+    dpi = max(72, min(dpi, 300))
+    conn = get_db()
+    r = conn.execute("SELECT path FROM files WHERE id=?", (fid,)).fetchone()
+    conn.close()
+    if not r or not os.path.isfile(r["path"]):
+        raise HTTPException(404, "文件缺失或已被删除")
+    try:
+        import fitz
+        doc = fitz.open(r["path"])
+        try:
+            if num < 1 or num > doc.page_count:
+                raise HTTPException(404, "页码超出范围")
+            png = doc[num - 1].get_pixmap(dpi=dpi).tobytes("png")
+        finally:
+            doc.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, "页面渲染失败：%s" % e)
+    return Response(content=png, media_type="image/png")
 
 @app.put("/api/file/{fid}")
 async def update_file(fid: int, request: Request):
@@ -1705,7 +1765,10 @@ async def update_file(fid: int, request: Request):
                      (transcript, time.time(), fid))
     pdf_text = data.get("pdf_text")
     if pdf_text is not None:
-        conn.execute("UPDATE files SET content=?, content_source='manual' WHERE id=?", (pdf_text, fid))
+        src = data.get("pdf_text_source") or "manual"   # ocr=浏览器内置识别 / manual=人工
+        if src not in ("ocr", "manual", "text_layer"):
+            src = "manual"
+        conn.execute("UPDATE files SET content=?, content_source=? WHERE id=?", (pdf_text, src, fid))
     conn.commit()
     conn.close()
     return {"ok": True}
@@ -2331,15 +2394,11 @@ def umi_reachable():
         return False
 
 def pending_scan_pdf_ids(conn):
-    """扫描件待识别池：在磁盘上、无文字内容的 PDF 文件 id 列表。"""
+    """扫描件待识别池：在磁盘上、无文字内容的 PDF，返回 (id, name) 列表。"""
     rows = conn.execute(
-        "SELECT id, path FROM files WHERE missing=0 AND LOWER(ext) IN ('.pdf')"
+        "SELECT id, name, path FROM files WHERE missing=0 AND LOWER(ext) IN ('.pdf')"
         " AND (content IS NULL OR content='')").fetchall()
-    out = []
-    for r in rows:
-        if os.path.isfile(r["path"]):
-            out.append(r["id"])
-    return out
+    return [(r["id"], r["name"]) for r in rows if os.path.isfile(r["path"])]
 
 
 _backlog_job_id = None
@@ -2359,11 +2418,12 @@ def _start_pdf_backlog_ocr():
         return None                      # 已有补识别任务在跑
     conn = get_db()
     try:
-        ids = pending_scan_pdf_ids(conn)
+        items = pending_scan_pdf_ids(conn)
     finally:
         conn.close()
-    if not ids:
+    if not items:
         return None
+    ids = [i for i, _ in items]
     jid = str(int(time.time() * 1000)) + "b"      # b = backlog，避免与手动任务撞号
     ocr_jobs[jid] = {"total": len(ids), "done": 0, "current": "", "error": None,
                      "finished": False, "kind": "pdf"}
@@ -2438,7 +2498,8 @@ def ocr_check_ep():
     return {"available": avail, "langs": langs, "ocr_langs": OCR_LANGS,
             "engine": OCR_ENGINE, "umi_url": UMI_OCR_URL,
             "umi_reachable": umi_reachable(), "error": err,
-            "install_guide": ocr_install_guide()}
+            "install_guide": ocr_install_guide(),
+            "wasm_available": wasm_available()}
 
 
 @app.get("/api/ocr/pending")
@@ -2446,10 +2507,26 @@ def ocr_pending_ep():
     """扫描件待识别池：无文字内容的 PDF 清单（供前端一键补识别）。"""
     conn = get_db()
     try:
-        ids = pending_scan_pdf_ids(conn)
+        items = pending_scan_pdf_ids(conn)
     finally:
         conn.close()
-    return {"count": len(ids), "ids": ids}
+    return {"count": len(items),
+            "ids": [i for i, _ in items], "names": [n for _, n in items]}
+
+
+@app.post("/api/ocr/pdf_ids")
+async def ocr_pdf_ids_ep(request: Request):
+    """从所选文件中筛出 PDF（浏览器内置 OCR 仅支持 PDF）。"""
+    data = await request.json()
+    ids = [int(i) for i in (data.get("ids") or []) if str(i).strip().isdigit()]
+    if not ids:
+        raise HTTPException(400, "未选择任何文件")
+    conn = get_db()
+    qmarks = ",".join("?" * len(ids))
+    rows = conn.execute(f"SELECT id, ext FROM files WHERE id IN ({qmarks})", ids).fetchall()
+    conn.close()
+    out = [r["id"] for r in rows if categorize(r["ext"]) == "pdf"]
+    return {"ids": out, "skipped": len(ids) - len(out)}
 
 @app.post("/api/ocr")
 async def start_ocr(request: Request):
