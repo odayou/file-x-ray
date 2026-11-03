@@ -72,6 +72,8 @@ function renderDetail(d){
   if(trBtn) trBtn.onclick=()=>startTranscribe([d.id]);
   const ocrBtn=document.getElementById('ocrBtn');
   if(ocrBtn) ocrBtn.onclick=()=>startOcr([d.id]);
+  const pdfProofBtn=document.getElementById('pdfProofBtn');
+  if(pdfProofBtn) pdfProofBtn.onclick=()=>openProofread(d);
   const cpBtn=document.getElementById('copyTranscript');
   if(cpBtn) cpBtn.onclick=()=>{ const t=document.getElementById('transcriptView').value; navigator.clipboard.writeText(t).then(()=>toast('已复制文字稿')).catch(()=>toast('复制失败，请手动选择')); };
   const accBtn=document.getElementById('acceptText');

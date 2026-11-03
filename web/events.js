@@ -71,6 +71,8 @@ document.getElementById('ocrSelBtn').onclick=()=>{
   if(!ids.length){ toast('请先勾选文件'); return; }
   startOcr(ids);
 };
+// OCR 进度浮层：可转入后台（任务继续跑，完成时 toast 提示并刷新）
+document.getElementById('ocrHide').onclick=()=>document.getElementById('ocrOverlay').classList.remove('show');
 // 项目：切换 / 管理面板 / 编辑弹窗
 document.getElementById('projectSel').onchange=e=>switchProject(e.target.value);
 document.getElementById('projMgrBtn').onclick=()=>{
@@ -112,5 +114,5 @@ loadProjects().then(()=>{
 }).catch(()=>{});
 apiGet('/api/transcribe/check').then(r=>{ state.whisper=r; if(state.currentId) selectFile(state.currentId); })
   .catch(()=>{ state.whisper={available:false}; });
-apiGet('/api/ocr/check').then(r=>{ state.ocr=r; }).catch(()=>{ state.ocr={available:false}; });
+refreshOcrBadge();
 refreshWatchBtn();

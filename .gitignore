@@ -6,7 +6,15 @@ __pycache__/
 .venv/
 venv/
 
+# PyInstaller 打包产物
+build/
+dist/
+
+# SQLite WAL/SHM 残留
+*.db-*
+
 # 操作系统/编辑器临时文件
 .DS_Store
 Thumbs.db
 *.swp
+.idea/

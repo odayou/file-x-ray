@@ -128,7 +128,16 @@
   .pending-block .meta-row b { color:#b45309; }
   #pendingView { width:100%; min-height:110px; background:#fff; border:1px solid #fcd34d; border-radius:6px; padding:8px; font-size:12px; color:var(--text); resize:vertical; font-family:inherit; }
   .pending-tip { font-size:11px; color:#92610a; margin:6px 0 0; line-height:1.5; }
+  /* OCR 未启用时的安装引导（跨平台提示） */
+  .ocr-guide { font-size:12px; color:#b45309; background:#fffbeb; border:1px solid #fcd34d;
+    border-radius:8px; padding:8px 10px; margin:8px 0 0; line-height:1.7; }
+  .ocr-guide b { color:#92400e; }
   .badge-pending { background:#f59e0b; color:#fff; font-size:10px; padding:1px 5px; border-radius:8px; margin-left:5px; }
+  /* 顶栏常驻 OCR 状态徽标 */
+  .ocr-badge { display:inline-flex; align-items:center; gap:4px; font-size:12px; padding:2px 9px; border-radius:11px; border:1px solid var(--border); margin-left:8px; white-space:nowrap; }
+  .ocr-badge.ok { color:#15803d; background:#f0fdf4; border-color:#bbf7d0; }
+  .ocr-badge.warn { color:#b45309; background:#fffbeb; border-color:#fcd34d; cursor:pointer; }
+  .ocr-badge.warn:hover { background:#fef3c7; }
   .root-dead { color:#dc2626; }
   /* 当前项目的根目录路径（工具栏常驻，点击可直接打开） */
   #projRootBar { display:none; align-items:center; gap:5px; max-width:300px; font-size:11px;
@@ -150,6 +159,8 @@
   /* 通用弹窗遮罩（状态管理 / 目录选择 / 批量编辑 / 项目编辑） */
   #statusModal, #dirModal, #batchModal, #projModal { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: none; align-items: center; justify-content: center; z-index: 120; }
   #statusModal.show, #dirModal.show, #batchModal.show, #projModal.show { display: flex; }
+  /* 动态创建的通用遮罩（如 OCR 安装引导） */
+  .modal-mask { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: flex; align-items: center; justify-content: center; z-index: 130; }
   /* 目录选择器常从项目编辑表单内触发，需始终压在 #projModal(z=120) 之上 */
   #dirModal { z-index: 140; }
   /* 项目面板 */
@@ -192,6 +203,7 @@
           style="min-width:160px;max-width:240px"></select>
   <button class="btn-ghost" id="projMgrBtn" title="新建 / 改名 / 改目录 / 删除 / 重扫项目">📁 管理项目</button>
   <div id="stats"></div>
+  <span id="ocrBadge" class="ocr-badge" title="OCR 状态">OCR …</span>
 </header>
 
 <div class="toolbar">
@@ -379,9 +391,10 @@
 
 <!-- OCR 进度 -->
 <div id="ocrOverlay"><div class="tr-box">
-  <div>🖼 正在识别图片文字（Umi-OCR / tesseract）…</div>
+  <div>🖼 正在识别图片 / PDF 文字（Umi-OCR / tesseract）…</div>
   <div class="num" id="ocrNum">0 / 0</div>
   <div class="cur" id="ocrCur"></div>
+  <button class="btn-ghost btn-sm" id="ocrHide" style="margin-top:12px">转入后台（完成后自动提示）</button>
 </div></div>
 
 <!-- 调试日志面板（右侧滑出）：累加记录所有提示/错误，可复制 -->

@@ -20,6 +20,7 @@ import mimetypes
 import subprocess
 import threading
 import sqlite3
+import tempfile
 import secrets
 import shutil
 from collections import Counter
@@ -33,11 +34,49 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, HTM
 # ----------------------------------------------------------------------------
 if getattr(sys, "_MEIPASS", None):          # 被 PyInstaller 打包后运行
     BASE_DIR = sys._MEIPASS
-    DEFAULT_DB = os.path.join(os.path.expanduser("~"), "file_index_data", "file_index.db")
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    DEFAULT_DB = os.path.join(BASE_DIR, "file_index.db")
-DB_PATH = os.environ.get("FIT_DB", DEFAULT_DB)
+
+
+def _resolve_db_path():
+    """自动挑选一个可写的数据库路径，全程零配置。
+
+    源码运行：沿用程序目录下的 file_index.db（开发体验与旧版一致）。
+    打包后优先级（环境变量 FIT_DB 可强制覆盖）：
+      1) 用户目录 ~/file_index_data/file_index.db
+      2) 可执行文件旁边的 file_index_data/file_index.db
+      3) 系统临时目录下的 file_xray/file_index.db
+    返回 (path, where) —— where 用于启动时打印实际落盘位置。
+    """
+    forced = os.environ.get("FIT_DB")
+    if forced:
+        return forced, forced
+    if not getattr(sys, "_MEIPASS", None):     # 源码运行：行为与旧版一致
+        return os.path.join(BASE_DIR, "file_index.db"), "程序目录"
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    candidates = [
+        (os.path.join(os.path.expanduser("~"), "file_index_data", "file_index.db"),
+         "用户目录"),
+        (os.path.join(exe_dir, "file_index_data", "file_index.db"),
+         "程序所在目录"),
+        (os.path.join(tempfile.gettempdir(), "file_xray", "file_index.db"),
+         "系统临时目录"),
+    ]
+    for path, where in candidates:
+        d = os.path.dirname(path)
+        try:
+            os.makedirs(d, exist_ok=True)
+            # 用追加模式试写，确认目录真的可写
+            with open(path, "a"):
+                pass
+            return path, where
+        except Exception:
+            continue
+    # 兜底：理论上到不了
+    return candidates[-1][0], candidates[-1][1]
+
+
+DB_PATH, DB_WHERE = _resolve_db_path()
 HOST = os.environ.get("FIT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("FIT_PORT", "8000"))
 
@@ -109,11 +148,24 @@ OCR_LANGS = os.environ.get("FIT_OCR_LANGS", "chi_sim+eng")  # OCR 语言，+ 连
 OCR_MAX_BYTES = int(os.environ.get("FIT_OCR_MAX_MB", "30")) * 1024 * 1024
 UMI_OCR_URL = os.environ.get("FIT_UMI_OCR_URL", "http://127.0.0.1:1224").rstrip("/")  # Umi-OCR HTTP 接口
 OCR_ENGINE = os.environ.get("FIT_OCR_ENGINE", "auto")  # auto（优先 Umi-OCR，否则 tesseract）| umi | tesseract
+# 扫描件/无文字层 PDF 是否在扫描时自动 OCR（需 OCR 引擎可用）。设 0/false 可关闭以免拖慢扫描。
+OCR_PDF_ENABLED = os.environ.get("FIT_OCR_PDF", "1").lower() not in ("0", "false", "no")
+# 单个 PDF 的 OCR 页数上限（超出部分不识别，避免超大扫描件拖死任务）。0 = 不限制。
+PDF_OCR_MAX_PAGES = max(0, int(os.environ.get("FIT_PDF_OCR_PAGES", "200")))
 
 # ----------------------------------------------------------------------------
 # 数据库
 # ----------------------------------------------------------------------------
 def get_db():
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir and not os.path.isdir(db_dir):
+        try:
+            os.makedirs(db_dir, exist_ok=True)
+        except Exception as e:
+            raise RuntimeError(
+                f"无法创建数据库目录 {db_dir}，请检查权限或设置环境变量 "
+                f"FIT_DB 指定可写路径：{e}"
+            )
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
@@ -325,6 +377,11 @@ def init_db():
     # 兼容旧库：补齐 missing（扫描时标记的“磁盘上已不存在”标记）
     try:
         c.execute("ALTER TABLE files ADD COLUMN missing INTEGER DEFAULT 0")
+    except Exception:
+        pass
+    # PDF 文字来源：text_layer（文字层精确抽取）/ ocr（OCR 识别，建议校对）/ manual（人工校对）
+    try:
+        c.execute("ALTER TABLE files ADD COLUMN content_source TEXT DEFAULT ''")
     except Exception:
         pass
     # 待确认的识别结果：已有旧内容时新结果先进这里，人工确认后才覆盖正式内容
@@ -608,6 +665,60 @@ def ocr_image(path, langs=OCR_LANGS):
         pass
     return tesseract_ocr(path, langs)
 
+
+def ocr_is_available():
+    """OCR 引擎是否可用（供扫描自动 OCR / 前端按钮判断）。"""
+    try:
+        return ocr_check()[0]
+    except Exception:
+        return False
+
+
+def ocr_install_guide():
+    """按当前操作系统返回“如何安装 OCR 引擎”的引导文案（跨平台）。"""
+    p = sys.platform
+    if p.startswith("win"):
+        return ("Windows：推荐安装 Umi-OCR（中文识别更强，启动后自动开启本地 HTTP 接口）；"
+                "或安装 Tesseract：从 UB-Mannheim/tesseract 下载安装包并勾选中文语言包，"
+                "再把安装目录加入系统 PATH。")
+    if p == "darwin":
+        return "macOS：在终端执行  brew install tesseract tesseract-lang  （需先安装 Homebrew）。"
+    if p.startswith("linux"):
+        return ("Linux：在终端执行  sudo apt install tesseract-ocr tesseract-ocr-chi-sim "
+                "tesseract-ocr-eng  （其他发行版用对应包管理器，如 dnf/yum/pacman）。")
+    return "请安装 Tesseract OCR 或 Umi-OCR（开启 HTTP 接口）后重试。"
+
+
+def ocr_pdf(path, langs=OCR_LANGS):
+    """扫描件/无文字层 PDF：逐页渲染为图片后 OCR，拼接返回文字。需 OCR 引擎可用。
+
+    受 PDF_OCR_MAX_PAGES 限制页数，防止超大扫描件拖死任务。
+    """
+    import fitz  # PyMuPDF
+    doc = fitz.open(path)
+    try:
+        tmp_dir = os.path.join(tempfile.gettempdir(), "file_xray")
+        os.makedirs(tmp_dir, exist_ok=True)
+        pages_text = []
+        for i, page in enumerate(doc):
+            if PDF_OCR_MAX_PAGES and i >= PDF_OCR_MAX_PAGES:
+                break
+            pix = page.get_pixmap(dpi=200)
+            tmp = os.path.join(tmp_dir, "pdfpage_%d_%d.png" % (os.getpid(), i))
+            pix.save(tmp)
+            try:
+                t = ocr_image(tmp, langs)
+                if t:
+                    pages_text.append(t)
+            finally:
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+        return "\n".join(pages_text).strip()
+    finally:
+        doc.close()
+
 # ----------------------------------------------------------------------------
 # 指纹追认：文件改名 / 移动 / 所在目录改名 / 根目录改名后，把标注迁到新路径
 # ----------------------------------------------------------------------------
@@ -795,6 +906,8 @@ def scan_worker(root, max_depth, scan_id, project_id=None):
                         content = extract_pdf_text(full)[:PDF_TEXT_LIMIT]
                     except Exception:
                         content = ""
+                    # 扫描件/无文字层的 OCR 不在此处同步做（会拖慢扫描）：
+                    # 扫描结束后由后台任务统一补识别（见 _start_pdf_backlog_ocr）。
                 if moved_id:
                     # 老文件换了位置/名字：整行迁移，标注零丢失
                     conn.execute(
@@ -803,8 +916,10 @@ def scan_worker(root, max_depth, scan_id, project_id=None):
                         (full, rel, fn, ext, parent, st.st_size, st.st_mtime, depth,
                          time.time(), moved_id),
                     )
-                    if is_text or is_pdf:
-                        conn.execute("UPDATE files SET content=? WHERE id=?", (content, moved_id))
+                    # PDF 抽不到文字层时保留旧内容（可能 是此前 OCR 的结果），不被空值冲掉
+                    if is_text or (is_pdf and (content or "").strip()):
+                        conn.execute("UPDATE files SET content=?, content_source=? WHERE id=?",
+                                     (content, "text_layer" if is_pdf else "", moved_id))
                 else:
                     # 入库：先插入（已存在则忽略），再更新可变元数据，避免冲掉备注/状态/转写/识别结果
                     conn.execute(
@@ -818,8 +933,9 @@ def scan_worker(root, max_depth, scan_id, project_id=None):
                            WHERE path=?""",
                         (rel, fn, ext, parent, st.st_size, st.st_mtime, depth, time.time(), full),
                     )
-                    if is_text or is_pdf:
-                        conn.execute("UPDATE files SET content=? WHERE path=?", (content, full))
+                    if is_text or (is_pdf and (content or "").strip()):
+                        conn.execute("UPDATE files SET content=?, content_source=? WHERE path=?",
+                                     (content, "text_layer" if is_pdf else "", full))
                 count += 1
                 if count % 200 == 0:
                     conn.commit()
@@ -828,6 +944,11 @@ def scan_worker(root, max_depth, scan_id, project_id=None):
         conn.commit()
         scan_state[scan_id]["processed"] = count
         scan_state[scan_id]["done"] = True
+        # 扫描完成：扫描件/无文字层 PDF 交给后台 OCR 队列（不阻塞扫描，进度走 /api/ocr/{jid}）
+        try:
+            scan_state[scan_id]["ocr_job_id"] = _start_pdf_backlog_ocr()
+        except Exception as _e:
+            print("启动扫描件补识别失败: %s" % _e)
     except Exception as e:
         scan_state[scan_id]["error"] = str(e)
         scan_state[scan_id]["done"] = True
@@ -1017,6 +1138,12 @@ def index():
     except Exception:
         # 兜底：直接返回静态文件（此时前端拿不到令牌，仅本地调试用）
         return FileResponse(p)
+
+
+@app.get("/api/health")
+def health():
+    """健康检查：供“单实例”探测已运行的服务是否还活着。"""
+    return {"ok": True, "service": "file-xray"}
 
 # ---------- 状态（可自定义） ----------
 @app.get("/api/statuses")
@@ -1339,7 +1466,8 @@ def scan_progress(sid: str):
     s = scan_state.get(sid)
     if not s:
         raise HTTPException(404, "无此扫描任务")
-    return {"processed": s["processed"], "done": s["done"], "error": s["error"], "root": s["root"]}
+    return {"processed": s["processed"], "done": s["done"], "error": s["error"], "root": s["root"],
+            "ocr_job_id": s.get("ocr_job_id")}
 
 # ---------- 统计 ----------
 @app.get("/api/stats")
@@ -1544,7 +1672,7 @@ def file_detail(fid: int):
     d["pending_text"] = d.get("pending_text") or ""
     d["pending_kind"] = d.get("pending_kind") or ""
     d["can_transcribe"] = (d["category"] in ("audio", "video")) and bool(d["exists"])
-    d["can_ocr"] = (d["category"] == "image") and bool(d["exists"])
+    d["can_ocr"] = (d["category"] in ("image", "pdf")) and bool(d["exists"]) and ocr_is_available()
     d["ocr_langs"] = OCR_LANGS
     d["pdf_text"] = (d.get("content") or "") if d["category"] == "pdf" else ""
     conn.close()
@@ -1577,7 +1705,7 @@ async def update_file(fid: int, request: Request):
                      (transcript, time.time(), fid))
     pdf_text = data.get("pdf_text")
     if pdf_text is not None:
-        conn.execute("UPDATE files SET content=? WHERE id=?", (pdf_text, fid))
+        conn.execute("UPDATE files SET content=?, content_source='manual' WHERE id=?", (pdf_text, fid))
     conn.commit()
     conn.close()
     return {"ok": True}
@@ -1898,11 +2026,13 @@ def _index_single(path):
                 content = extract_pdf_text(path)[:PDF_TEXT_LIMIT]
             except Exception:
                 content = ""
+            # 扫描件 OCR 不在此同步做：入库后由待识别池/后台任务统一补
         conn.execute(
-            """INSERT OR IGNORE INTO files(path,rel_path,name,ext,parent,size,mtime,depth,status,note,tags,content,indexed_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT OR IGNORE INTO files(path,rel_path,name,ext,parent,size,mtime,depth,status,note,tags,content,content_source,indexed_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (path, rel, fn, ext, parent, st.st_size, st.st_mtime, depth,
-             "未处理", "", "", content, time.time()))
+             "未处理", "", "", content,
+             "text_layer" if (ext in PDF_EXTS and (content or "").strip()) else "", time.time()))
         conn.execute(
             """UPDATE files SET rel_path=?,name=?,ext=?,parent=?,size=?,mtime=?,depth=?,indexed_at=?,missing=0
                WHERE path=?""",
@@ -2200,6 +2330,49 @@ def umi_reachable():
     except Exception:
         return False
 
+def pending_scan_pdf_ids(conn):
+    """扫描件待识别池：在磁盘上、无文字内容的 PDF 文件 id 列表。"""
+    rows = conn.execute(
+        "SELECT id, path FROM files WHERE missing=0 AND LOWER(ext) IN ('.pdf')"
+        " AND (content IS NULL OR content='')").fetchall()
+    out = []
+    for r in rows:
+        if os.path.isfile(r["path"]):
+            out.append(r["id"])
+    return out
+
+
+_backlog_job_id = None
+
+
+def _start_pdf_backlog_ocr():
+    """对全部待识别扫描件 PDF 启动后台 OCR 任务（引擎可用且开关打开时）。
+
+    返回 job_id；无可做或引擎不可用时返回 None。
+    多根目录扫描会各自触发一次，已有任务在跑时不重复起。
+    """
+    global _backlog_job_id
+    if not OCR_PDF_ENABLED or not ocr_is_available():
+        return None
+    if _backlog_job_id and ocr_jobs.get(_backlog_job_id) \
+            and not ocr_jobs[_backlog_job_id].get("finished"):
+        return None                      # 已有补识别任务在跑
+    conn = get_db()
+    try:
+        ids = pending_scan_pdf_ids(conn)
+    finally:
+        conn.close()
+    if not ids:
+        return None
+    jid = str(int(time.time() * 1000)) + "b"      # b = backlog，避免与手动任务撞号
+    ocr_jobs[jid] = {"total": len(ids), "done": 0, "current": "", "error": None,
+                     "finished": False, "kind": "pdf"}
+    _backlog_job_id = jid
+    threading.Thread(target=ocr_worker, args=(ids, jid), daemon=True).start()
+    print("扫描件 PDF 后台补识别已启动：%d 个文件" % len(ids))
+    return jid
+
+
 ocr_jobs = {}
 
 def ocr_worker(ids, jid):
@@ -2208,23 +2381,44 @@ def ocr_worker(ids, jid):
         total = len(ids); done = 0
         for fid in ids:
             ocr_jobs[jid]["current"] = ""
-            r = conn.execute("SELECT id,path,ext,name FROM files WHERE id=?", (fid,)).fetchone()
+            r = conn.execute("SELECT id,path,ext,name,content FROM files WHERE id=?", (fid,)).fetchone()
             if not r:
                 done += 1; ocr_jobs[jid]["done"] = done; continue
             ext = r["ext"]; name = r["name"]; path = r["path"]
             ocr_jobs[jid]["current"] = name
-            if categorize(ext) != "image":
+            cat = categorize(ext)
+            if cat not in ("image", "pdf"):
                 done += 1; ocr_jobs[jid]["done"] = done; continue
             if not os.path.isfile(path):
                 done += 1; ocr_jobs[jid]["done"] = done; continue
             try:
-                if os.path.getsize(path) > OCR_MAX_BYTES:
+                if cat == "image" and os.path.getsize(path) > OCR_MAX_BYTES:
                     raise Exception("图片过大已跳过（>%dMB）" % (OCR_MAX_BYTES // 1024 // 1024))
-                text = ocr_image(path)
-                if not (text or "").strip():
-                    raise Exception("未识别出文字")
-                if store_recognized(conn, fid, text, "ocr"):
-                    ocr_jobs[jid]["pending"] = ocr_jobs[jid].get("pending", 0) + 1
+                if cat == "pdf":
+                    # 补识别（原本无内容）：先试文字层（快且精确），无文字层才 OCR；
+                    # 显式重新识别（已有内容）：直接 OCR（用户想重识）。
+                    text = ""
+                    src = "ocr"
+                    if not (r["content"] or "").strip():
+                        try:
+                            text = extract_pdf_text(path)[:PDF_TEXT_LIMIT]
+                        except Exception:
+                            text = ""
+                        if (text or "").strip():
+                            src = "text_layer"
+                    if not (text or "").strip():
+                        text = ocr_pdf(path)
+                    if not (text or "").strip():
+                        raise Exception("未识别出文字")
+                    # PDF 识别结果直接进入 content（即界面“PDF 文字”），不进暂存
+                    conn.execute("UPDATE files SET content=?, content_source=? WHERE id=?",
+                                 (text[:PDF_TEXT_LIMIT], src, fid))
+                else:
+                    text = ocr_image(path)
+                    if not (text or "").strip():
+                        raise Exception("未识别出文字")
+                    if store_recognized(conn, fid, text, "ocr"):
+                        ocr_jobs[jid]["pending"] = ocr_jobs[jid].get("pending", 0) + 1
             except Exception as e:
                 # 失败时不写入，保留原有内容（绝不把旧结果冲掉）
                 ocr_jobs[jid].setdefault("errors", []).append(
@@ -2243,7 +2437,19 @@ def ocr_check_ep():
     avail, err, langs = ocr_check()
     return {"available": avail, "langs": langs, "ocr_langs": OCR_LANGS,
             "engine": OCR_ENGINE, "umi_url": UMI_OCR_URL,
-            "umi_reachable": umi_reachable(), "error": err}
+            "umi_reachable": umi_reachable(), "error": err,
+            "install_guide": ocr_install_guide()}
+
+
+@app.get("/api/ocr/pending")
+def ocr_pending_ep():
+    """扫描件待识别池：无文字内容的 PDF 清单（供前端一键补识别）。"""
+    conn = get_db()
+    try:
+        ids = pending_scan_pdf_ids(conn)
+    finally:
+        conn.close()
+    return {"count": len(ids), "ids": ids}
 
 @app.post("/api/ocr")
 async def start_ocr(request: Request):
@@ -2270,12 +2476,62 @@ def ocr_progress(jid: str):
 # ----------------------------------------------------------------------------
 # 启动
 # ----------------------------------------------------------------------------
+def _instance_lock_path():
+    return os.path.join(tempfile.gettempdir(), "file_xray", "instance.lock")
+
+
+def _read_running_url():
+    try:
+        with open(_instance_lock_path(), "r", encoding="utf-8") as _f:
+            return _f.read().strip()
+    except Exception:
+        return None
+
+
+def _server_alive(url):
+    """探测某个 URL 是否真的是本程序还在运行（而非被别的程序占用端口）。"""
+    try:
+        import urllib.request
+        import urllib.error
+        with urllib.request.urlopen(url + "/api/health", timeout=1.5) as _r:
+            return _r.status == 200 and b"file-xray" in _r.read()
+    except Exception:
+        return False
+
+
+def _write_lock(url):
+    _p = _instance_lock_path()
+    os.makedirs(os.path.dirname(_p), exist_ok=True)
+    with open(_p, "w", encoding="utf-8") as _f:
+        _f.write(url)
+
+
+def _remove_lock():
+    try:
+        os.remove(_instance_lock_path())
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
     import uvicorn
     import webbrowser
+    import atexit
     init_db()
     url = f"http://{HOST}:{PORT}"
+    # 单实例：若已有实例在运行，直接打开浏览器并退出，避免端口冲突崩溃
+    existing = _read_running_url()
+    if existing and _server_alive(existing):
+        print(f"检测到已在运行的服务：{existing}，直接打开浏览器。")
+        try:
+            webbrowser.open(existing)
+        except Exception:
+            pass
+        sys.exit(0)
+    _write_lock(url)
+    atexit.register(_remove_lock)
     print(f"文件索引工具已启动: {url}")
+    print(f"数据库位置（{DB_WHERE}）: {DB_PATH}")
     # 启动后自动打开浏览器（打包成 exe 时更友好；无桌面环境静默忽略）
     def _open():
         try:
@@ -2283,4 +2539,14 @@ if __name__ == "__main__":
         except Exception:
             pass
     threading.Timer(1.2, _open).start()
-    uvicorn.run(app, host=HOST, port=PORT)
+    try:
+        uvicorn.run(app, host=HOST, port=PORT)
+    except OSError as _e:
+        # 极端情况下端口仍被占用（如被其它无关程序占住 8000）：提示而非静默崩溃
+        if "10048" in str(_e) or "address already in use" in str(_e).lower():
+            print(f"端口 {PORT} 已被占用，无法启动。请先关闭占用该端口的程序，"
+                  f"或设置环境变量 FIT_PORT 指定其它端口。")
+        else:
+            raise
+    finally:
+        _remove_lock()

@@ -154,13 +154,13 @@ async function pollProjectScan(sids){
   document.getElementById('scanOverlay').classList.add('show');
   document.getElementById('scanRoot').textContent='正在重新扫描项目…';
   const pending=new Set(sids);
-  let total=0;
+  let total=0, ocrJob=null;
   while(pending.size){
     await new Promise(res=>setTimeout(res,500));
     for(const sid of Array.from(pending)){
       try{
         const r=await apiGet('/api/scan/'+sid);
-        if(r.done){ pending.delete(sid); total+=r.processed||0; }
+        if(r.done){ pending.delete(sid); total+=r.processed||0; if(r.ocr_job_id) ocrJob=r.ocr_job_id; }
       }catch(e){ pending.delete(sid); }
     }
     document.getElementById('scanNum').textContent=total.toLocaleString();
@@ -168,6 +168,11 @@ async function pollProjectScan(sids){
   document.getElementById('scanOverlay').classList.remove('show');
   toast('项目扫描完成，共 '+total.toLocaleString()+' 个文件');
   await loadProjects(); await loadStats(); await loadTree(); await loadTags(); await loadFiles();
+  // 扫描触发的扫描件 PDF 后台补识别：接着展示其进度（不阻塞，可随时关闭页面看结果）
+  if(ocrJob){
+    document.getElementById('ocrOverlay').classList.add('show');
+    pollOcr(ocrJob);
+  }
 }
 
 // ---------- 项目编辑弹窗 ----------

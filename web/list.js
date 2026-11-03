@@ -33,15 +33,27 @@ function tagChipsHtml(tags){
 function mediaBlock(d){
   if(d.category==='pdf'){
     const len=(d.pdf_text||'').length;
+    const srcMap={'text_layer':'文字层精确抽取','ocr':'OCR 识别（建议校对）','manual':'人工校对'};
+    const srcInfo = (len && srcMap[d.content_source]) ? (' · '+srcMap[d.content_source]) : '';
+    const hint = len ? ('已抽取 '+len+' 字，可被搜索'+srcInfo)
+                     : (d.can_ocr ? '（扫描件/无文字层，可点击下方按钮 OCR 识别）'
+                                  : '（扫描件/无文字层，暂无文字）');
+    const guide = (!len && !d.can_ocr && state.ocr && state.ocr.install_guide)
+      ? `<div class="ocr-guide">⚠ 当前环境未启用 OCR 引擎，无法识别扫描件 PDF。<br>${esc(state.ocr.install_guide)}</div>` : '';
     return `<div class="transcript-block">
-      <div class="meta-row"><b>PDF 文字</b><span>${len?('已抽取 '+len+' 字，可被搜索'):'（扫描件/无文字层，暂无文字）'}</span></div>
+      <div class="meta-row"><b>PDF 文字</b><span>${hint}</span></div>
       <textarea id="transcriptView" placeholder="PDF 抽取的文字内容，可直接修改校对（存入索引，可被搜索）">${esc(d.pdf_text||'')}</textarea>
       <div class="detail-actions">
+        ${d.can_ocr?`<button class="btn-primary btn-sm" id="ocrBtn">📄 ${len?"重新识别":"识别 PDF 文字（OCR）"}</button>`:''}
+        ${d.content_source==='ocr'?'<button class="btn-ghost btn-sm" id="pdfProofBtn">🔍 对照原文校对</button>':''}
         ${len?'<button class="btn-ghost btn-sm" id="copyTranscript">复制文字</button>':''}
       </div>
+      ${guide}
     </div>`;
   }
   if(d.category==='image'){
+    const guide = (!d.transcript && !d.can_ocr && state.ocr && state.ocr.install_guide)
+      ? `<div class="ocr-guide">⚠ 当前环境未启用 OCR 引擎，无法识别图片文字。<br>${esc(state.ocr.install_guide)}</div>` : '';
     return `<div class="transcript-block">
       <div class="meta-row"><b>图中文字</b><span>${d.transcript?('已识别文字稿'+(d.transcribed_at?' · '+fmtDate(d.transcribed_at):'')):'尚未识别'+(d.can_ocr?'（可点击下方按钮）':'（当前环境未启用 OCR）')}</span></div>
       <textarea id="transcriptView" placeholder="识别结果，可直接修改校对；也可点击下方按钮重新识别">${esc(d.transcript||'')}</textarea>
@@ -49,6 +61,7 @@ function mediaBlock(d){
         ${d.can_ocr?`<button class="btn-primary btn-sm" id="ocrBtn">🖼 ${d.transcript?"重新识别":"识别图中文字"}</button>`:''}
         ${d.transcript?'<button class="btn-ghost btn-sm" id="copyTranscript">复制文字稿</button>':''}
       </div>
+      ${guide}
     </div>`+pendingBlock(d);
   }
   if(d.category==='audio'||d.category==='video'){
