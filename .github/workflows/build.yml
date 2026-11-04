@@ -59,6 +59,18 @@ jobs:
         run: pyinstaller build.spec --noconfirm
         shell: bash
 
+      # 规范化产物名：Windows 自带 .exe；mac/linux 无后缀且原名相同，
+      # 直接发布会重名冲突，统一改名为 file-xray-<平台>
+      - name: Normalize binary name
+        shell: bash
+        run: |
+          if [ -f "dist/文件索引工具.exe" ]; then
+            cp "dist/文件索引工具.exe" "dist/${{ matrix.artifact }}.exe"
+          else
+            cp "dist/文件索引工具" "dist/${{ matrix.artifact }}"
+            chmod +x "dist/${{ matrix.artifact }}"
+          fi
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
