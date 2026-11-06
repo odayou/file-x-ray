@@ -551,9 +551,11 @@
 
 <!-- 转写进度 -->
 <div id="transcribeOverlay"><div class="tr-box">
-  <div>🎙 正在转写音频 / 视频…</div>
+  <div id="trTitle">🎙 正在转写音频 / 视频…</div>
   <div class="num" id="trNum">0 / 0</div>
   <div class="cur" id="trCur"></div>
+  <div id="trResult" style="display:none;margin-top:10px;max-width:min(560px,88vw);font-size:12px;line-height:1.6;text-align:left"></div>
+  <button class="btn-ghost btn-sm" id="trClose" style="display:none;margin-top:12px">关闭</button>
 </div></div>
 
 <!-- OCR 进度 -->

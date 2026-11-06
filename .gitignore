@@ -17,6 +17,10 @@ dist/
 logs/
 *.log
 
+# 测试截图与 HTML 分享包（过程产物，可重新生成）
+.screenshots/
+.trae-html-share-packages/
+
 # 操作系统/编辑器临时文件
 .DS_Store
 Thumbs.db

@@ -794,6 +794,13 @@ def job_progress_from_row(row, kind=""):
         "pages_total": extra.get("pages_total") or 0,
         "seg_done": extra.get("seg_done") or 0,
         "seg_total": extra.get("seg_total") or 0,
+        # 转写失败可读化 / 模型下载进度（旧字段全部保留，仅追加）
+        "dl_done": extra.get("dl_done") or 0,
+        "dl_total": extra.get("dl_total") or 0,
+        "reason": extra.get("reason") or None,
+        "action": extra.get("action") or None,
+        "code": extra.get("code") or None,
+        "failed_stage": extra.get("failed_stage") or "",
     }
     if kind:
         out["kind"] = kind

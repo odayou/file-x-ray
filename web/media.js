@@ -15,6 +15,55 @@ function setTranscribeProgress(done, total, cur){
   if(ce && ce.textContent!==cur) ce.textContent=cur;
 }
 
+// 下载进度：优先显示百分比 + 已下载/总字节；hub 没给总大小时只显示已下载量
+function dlProgressText(r){
+  const d=Number(r.dl_done)||0, t=Number(r.dl_total)||0;
+  if(!d && !t) return '';
+  const mb=v=>(v/1048576).toFixed(1);
+  if(t>0) return '（'+Math.min(100,Math.floor(d*100/t))+'%，'+mb(d)+' / '+mb(t)+' MB）';
+  return '（已下载 '+mb(d)+' MB）';
+}
+
+// 成功/失败面板复位（开始新任务时调用）
+function resetTranscribePanel(){
+  const box=document.getElementById('trResult'), btn=document.getElementById('trClose'),
+        title=document.getElementById('trTitle');
+  if(box){ box.innerHTML=''; box.style.display='none'; }
+  if(btn) btn.style.display='none';
+  if(title) title.textContent='🎙 正在转写音频 / 视频…';
+}
+
+// 失败/部分失败：在面板里直接写“原因 + 建议 + 停在哪一步”，而不是只弹 toast
+function showTranscribeResult(r){
+  const box=document.getElementById('trResult'), btn=document.getElementById('trClose'),
+        title=document.getElementById('trTitle');
+  const errs=(r&&r.errors)||[];
+  const failed=!!r && r.status==='failed';
+  const rows=[];
+  if(failed){
+    const reason=r.reason||r.error||('全部 '+(r.total||errs.length)+' 个文件未能转写');
+    rows.push('<div style="color:#c0392b"><b>失败原因：</b>'+esc(reason)+'</div>');
+    if(r.action) rows.push('<div><b>建议：</b>'+esc(r.action)+'</div>');
+    if(r.failed_stage) rows.push('<div style="color:var(--muted)">停在：'+esc(r.failed_stage)+'</div>');
+  }else if(errs.length){
+    const e=errs[0]||{};
+    rows.push('<div style="color:#c0392b"><b>失败原因：</b>'+esc(e.reason||e.error||'转写失败')+'</div>');
+    if(e.action) rows.push('<div><b>建议：</b>'+esc(e.action)+'</div>');
+    if(errs.length>1) rows.push('<div style="color:var(--muted)">另有 '+(errs.length-1)+' 个文件失败（原有内容未被覆盖）</div>');
+  }
+  if(box){ box.innerHTML=rows.join(''); box.style.display=rows.length?'block':'none'; }
+  if(btn) btn.style.display=rows.length?'inline-block':'none';
+  if(title) title.textContent=failed?'🎙 转写失败':(errs.length?'🎙 部分文件转写失败':'🎙 转写完成');
+}
+
+document.addEventListener('DOMContentLoaded', function(){
+  const btn=document.getElementById('trClose');
+  if(btn) btn.addEventListener('click', function(){
+    const ov=document.getElementById('transcribeOverlay');
+    if(ov) ov.classList.remove('show');
+  });
+});
+
 async function startTranscribe(ids, opts){
   if(_trBusy){ toast('转写任务正在进行中，请稍候'); return; }
   if(!state.whisper || !state.whisper.available){ toast('转写功能未安装：pip install faster-whisper'); return; }
@@ -26,6 +75,7 @@ async function startTranscribe(ids, opts){
   try{ const r=await apiPost('/api/transcribe',body); jid=r.job_id; }
   catch(e){ _trBusy=false; toast('启动转写失败: '+e.message); return; }
   if(!jid){ _trBusy=false; toast('启动转写失败：未返回任务号'); return; }
+  resetTranscribePanel();
   document.getElementById('transcribeOverlay').classList.add('show');
   pollTranscribe(jid);
 }
@@ -56,22 +106,40 @@ async function pollTranscribe(jid){
     _trTotal=total; _trLastDone=done;
     if(r.finished){
       const sd=Math.floor(Number(r.seg_done)||0), st=Math.floor(Number(r.seg_total)||0);
-      setTranscribeProgress(done, total,
-        st?('处理完成（语音 '+sd+'s / '+st+'s）'):'处理完成');
+      const errs=r.errors||[];
+      let fin='处理完成';
+      if(r.status==='failed') fin='转写失败'+(r.failed_stage?('（停在：'+r.failed_stage+'）'):'');
+      else if(errs.length) fin='部分完成（'+errs.length+' 个失败）';
+      else if(st) fin+='（语音 '+sd+'s / '+st+'s）';
+      setTranscribeProgress(done, total, fin);
       break;                                   // 完成即停
     }
     const sd=Math.floor(Number(r.seg_done)||0), st=Math.floor(Number(r.seg_total)||0);
-    const seg=st?('（语音 '+sd+'s / '+st+'s）'):'';
-    let msg=r.stage?(r.stage+seg)
-                    :(r.current?('当前: '+r.current):'加载模型中…（首次使用需下载模型，请稍候）');
+    const isTr=!!r.stage && r.stage.indexOf('转写')>=0;
+    const seg=(isTr&&st)?('（语音 '+sd+'s / '+st+'s）'):'';
+    let msg;
+    if(r.stage && r.stage.indexOf('下载模型')>=0 && (Number(r.dl_done)||Number(r.dl_total))){
+      msg='正在'+r.stage.replace(/^下载模型\s*/,'下载模型 ')+dlProgressText(r)+'，首次使用会自动下载，请稍候…';
+    }else if(r.stage){
+      msg=r.stage+seg;
+    }else{
+      msg=r.current?('当前: '+r.current):'正在准备模型…（首次使用会自动下载，请稍候）';
+    }
     if(total && done>=total) msg='文本已写入索引，正在收尾…';
     setTranscribeProgress(done, total, msg);
     await new Promise(res=>setTimeout(res, OCR_POLL_MS));
   }
   if(token!==_trPollToken) return;
-  document.getElementById('transcribeOverlay').classList.remove('show');
+  const errs=(r&&r.errors)||[];
+  const failedNow=!!r && (r.status==='failed' || r.interrupted);
   _trBusy=false;
-  const errs=r.errors||[];
+  if(failedNow || errs.length){
+    // 失败/部分失败：面板保留，直接显示原因与建议，用户点“关闭”再收起
+    showTranscribeResult(r);
+  }else{
+    resetTranscribePanel();
+    document.getElementById('transcribeOverlay').classList.remove('show');
+  }
   if(r.interrupted){ toast('转写任务已中断（服务重启），可重新发起'); }
   else if(r.status==='failed' || r.error){
     toast('转写失败: '+(r.error||('全部 '+errs.length+' 个文件未能转写')));
