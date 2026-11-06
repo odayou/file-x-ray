@@ -126,15 +126,35 @@ jobs:
           test -x "dist/文件索引工具/文件索引工具" || {
             echo "main executable is not executable" >&2; exit 1; }
 
-      # 上传的只有安装包本身，不上传 onedir 目录或裸 exe
-      - name: Upload installer artifact
+      # 每个平台单独上传，且只给一个 path。
+      # upload-artifact 会把“所有输入的 path”求最小公共祖先：多行 path 里即使只有
+      # Windows 的 dist/installer/*.exe 命中，另外两行未命中的 dist/*.dmg、
+      # dist/*.tar.gz 仍参与 LCA 计算，根目录会被算成 dist，
+      # 导致 artifact 内的路径变成 installer/xxx.exe（而不是 xxx.exe）。
+      - name: Upload Windows installer
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: |
-            dist/installer/*.exe
-            dist/*.dmg
-            dist/*.tar.gz
+          path: dist/installer/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload macOS disk image
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Linux tarball
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -147,17 +167,40 @@ jobs:
       - name: Download all installers
         uses: actions/download-artifact@v4
         with:
+          pattern: file-xray-*
           path: release-assets
           merge-multiple: true
 
-      - name: List release assets
-        run: ls -la release-assets
+      # 防静默漏传：三平台资产必须都在 release-assets 顶层，且不能出现嵌套目录。
+      # softprops/action-gh-release 对未命中的 files 模式默认不会失败，这里先硬断言。
+      - name: Verify downloaded assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l release-assets
+          if find release-assets -mindepth 2 -type f | grep -q .; then
+            echo "unexpected nested files under release-assets:" >&2
+            find release-assets -mindepth 2 -type f >&2
+            exit 1
+          fi
+          for pat in '*-windows-x64-setup.exe' '*-macos-*.dmg' '*-linux-x64.tar.gz'; do
+            files="$(find release-assets -maxdepth 1 -type f -name "$pat")"
+            if [ -z "$files" ]; then
+              echo "missing expected asset: $pat" >&2
+              exit 1
+            fi
+            echo "found: $files"
+          done
 
       - name: Create draft release with installers
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          files: release-assets/*
+          files: |
+            release-assets/*-windows-x64-setup.exe
+            release-assets/*-macos-*.dmg
+            release-assets/*-linux-x64.tar.gz
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
