@@ -14,6 +14,66 @@ document.getElementById('typeFilter').onchange=()=>{
     document.getElementById('typeFilter').value==='_custom' ? '' : 'none';
   runSearch();
 };
+// ---------- 「更多 ⋯」收纳菜单：低频维护类按钮 ----------
+function moreMenuSetOpen(open){
+  const menu=document.getElementById('moreMenu'), btn=document.getElementById('moreBtn');
+  const wrap=document.getElementById('moreMenuWrap');
+  if(!menu||!btn) return;
+  if(open){
+    menu.hidden=false;
+    // 默认靠右对齐（外层按钮在窄屏会换行到左侧），再按视口夹一次，保证不被裁掉
+    menu.style.left=''; menu.style.right='';
+    const mr=menu.getBoundingClientRect(), wr=wrap.getBoundingClientRect();
+    if(mr.right > innerWidth-8){
+      menu.style.right='auto';
+      menu.style.left=(Math.max(8, innerWidth-8-mr.width) - wr.left)+'px';
+    }else if(mr.left < 8){
+      menu.style.right='auto';
+      menu.style.left=(8-wr.left)+'px';
+    }
+    const f=menu.querySelector('.more-item'); if(f) f.focus();
+  }else{
+    menu.hidden=true;
+    menu.style.left=''; menu.style.right='';
+    if(document.activeElement && menu.contains(document.activeElement)) btn.focus();
+  }
+  btn.setAttribute('aria-expanded', open?'true':'false');
+}
+// 菜单里可能改变过滤/感知状态，用一个小圆点提示“有开关处于开启状态”，避免收进菜单后看不见状态
+function updateMoreDot(){
+  const d=document.getElementById('moreDot');
+  if(!d) return;
+  const watchOn = document.getElementById('watchBtn').dataset.on==='1';
+  d.hidden = !(state.showMissing || watchOn);
+  document.getElementById('moreBtn').title = d.hidden ? '更多维护类操作'
+    : '更多维护类操作（有筛选/实时感知处于开启状态）';
+}
+document.getElementById('moreBtn').onclick=e=>{
+  e.stopPropagation();
+  moreMenuSetOpen(document.getElementById('moreMenu').hidden);
+};
+document.getElementById('moreMenu').addEventListener('keydown',e=>{
+  if(e.key==='Escape'){ e.preventDefault(); moreMenuSetOpen(false); return; }
+  if(e.key!=='ArrowDown'&&e.key!=='ArrowUp') return;
+  const items=Array.from(document.querySelectorAll('#moreMenu .more-item'));
+  const i=items.indexOf(document.activeElement);
+  if(i<0) return;
+  e.preventDefault();
+  items[(i+(e.key==='ArrowDown'?1:-1)+items.length)%items.length].focus();
+});
+// 菜单项点击后收起；每个菜单项仍走各自的原有处理函数，这里不复制任何业务逻辑
+document.getElementById('moreMenu').addEventListener('click',e=>{
+  if(e.target.closest('.more-item')) moreMenuSetOpen(false);
+});
+// 点外部 / Esc 关闭
+document.addEventListener('click',e=>{
+  const wrap=document.getElementById('moreMenuWrap');
+  if(wrap && !wrap.contains(e.target)) moreMenuSetOpen(false);
+});
+document.addEventListener('keydown',e=>{
+  const menu=document.getElementById('moreMenu');
+  if(e.key==='Escape' && menu && !menu.hidden){ e.preventDefault(); moreMenuSetOpen(false); }
+});
 // ---------- 调试日志面板 ----------
 document.getElementById('debugBtn').onclick=()=>{
   document.getElementById('debugPanel').classList.add('open'); renderDebugLog(); };
@@ -36,15 +96,8 @@ document.addEventListener('keydown',e=>{
 });
 
 document.getElementById('selectAll').onchange=e=>{
-  const chk=e.target.checked;
-  document.querySelectorAll('tr.row').forEach(tr=>{
-    if(tr.classList.contains('dir-row')) return;          // 目录行不可勾选，跳过
-    const id=parseInt(tr.dataset.id);
-    if(chk)state.selection.add(id); else state.selection.delete(id);
-    tr.classList.toggle('sel',chk);
-    const c=tr.querySelector('.rowchk'); if(c)c.checked=chk;
-  });
-  updateSelBar();
+  // 全选/取消全选都作用于“当前页”文件行；写回集合后由 updateSelBar → syncSelectAllState 同步表头
+  selectAllPage(e.target.checked);
 };
 document.getElementById('prevPage').onclick=()=>{ if(state.page>1){ state.page--; loadFiles(); } };
 document.getElementById('nextPage').onclick=()=>{
@@ -64,7 +117,7 @@ document.getElementById('okDirBtn').onclick=()=>{ if(dirCur) pickDir(dirCur); el
 document.getElementById('transcribeSelBtn').onclick=()=>{
   const ids=Array.from(state.selection);
   if(!ids.length){ toast('请先勾选文件'); return; }
-  startTranscribe(ids);
+  openTranscribePromptModal(ids);
 };
 document.getElementById('ocrSelBtn').onclick=()=>{
   const ids=Array.from(state.selection);
@@ -85,6 +138,8 @@ document.getElementById('missingBtn').onclick=()=>{
   const b=document.getElementById('missingBtn');
   b.textContent=state.showMissing?'👻 隐藏已失效':'👻 显示已失效';
   b.classList.toggle('btn-primary', state.showMissing);
+  b.classList.toggle('on', state.showMissing);
+  updateMoreDot();
   state.page=1; loadFiles();
 };
 document.getElementById('closeProj').onclick=()=>document.getElementById('projPanel').classList.remove('open');
@@ -106,6 +161,7 @@ document.getElementById('addStatusRow').onclick=()=>{
 // ---------- 初始化 ----------
 const restored=restoreState();                 // 先恢复上次现场（项目/位置/搜索/类型/文件）
 renderTagFilter();
+updateMoreDot();                               // 恢复的“显示已失效”开关要在“更多”入口上体现出来
 loadStatuses().then(()=>{ document.getElementById('statusFilter').value=state.status; }).catch(()=>{});
 // 先载入项目列表，再按恢复的项目载入统计 / 树 / 标签 / 清单，最后回到上次选中的文件
 loadProjects().then(()=>{
@@ -116,3 +172,7 @@ apiGet('/api/transcribe/check').then(r=>{ state.whisper=r; if(state.currentId) s
   .catch(()=>{ state.whisper={available:false}; });
 refreshOcrBadge();
 refreshWatchBtn();
+// P4：进程重启后，上次未完成的任务已在启动时标记为中断，这里提示用户
+apiGet('/api/jobs/interrupted').then(r=>{
+  if(r && r.count) toast('上次运行有 '+r.count+' 个任务未完成（已标记为中断，可重新触发）');
+}).catch(()=>{});

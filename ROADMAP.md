@@ -3,24 +3,26 @@
 > 基于 Gitee 仓库最新 `master`（提交 c10a2c8）代码状态，结合外部评审报告整理。
 > 代码已对齐：本地 `master` = `origin/master`；原始提交保留在 `local-backup` 标签。
 
-## 0. 当前代码状态核验
-- 后端默认感知 `127.0.0.1:8000`（本地回环，隐私友好）。
-- 已有**手动重新扫描**（`POST /api/scan`），重扫时通过 `INSERT OR IGNORE` + 仅更新 mtime/size/content，**保留**备注、状态、标签、转写结果。
-- 后端**无任何 API 鉴权 / token**，进程拥有完整文件系统权限（仅靠 `127.0.0.1` 降低风险）。
-- 目录**无 LICENSE、无测试、无 CI**；`requirements.txt` 使用 `>=` 未锁定版本。
-- ⚠️ **依赖 bug**：`requirements.txt` 含 `tesseract>=0.1.3`，此 PyPI 包非正确的 OCR 包装（正确应为已存在的 `pytesseract`），建议删除该行。
+## 0. 当前代码状态核验（2026-11 更新，以代码为准）
+- 后端默认监听 `127.0.0.1:8000`（本地回环，隐私友好）；**已有本地访问令牌**（`X-Fit-Token` 请求头或 `?token=`），写接口有请求体上限，打开/导出路径有越界校验。
+- 支持**手动重新扫描**与**增量扫描**（`mtime/size` 比对跳过未变文件），重扫保留备注、状态、标签、转写与 OCR 结果；磁盘上消失的文件标记 `missing` 并默认隐藏。
+- 已有 **watchdog 实时感知**（可选依赖，缺失时降级提示）与 **FTS5 trigram 全文检索**（搜索词短于 3 字符回退 LIKE，保证中文双字词不漏）。
+- 已有**项目（虚拟视图）**、指纹迁移、识别结果暂存确认、**排除规则**（`app_excludes`，支持扫描前跳过与存量清理）、**任务持久化**（`jobs` 表，重启后标记中断）与**同根目录并发保护**。
+- 仓库**已有 LICENSE（MIT）**与 **GitHub Actions 构建流水线**（`.github/workflows/build.yml`）；`requirements.txt` 仍用 `>=` 下限约束，另有 `requirements.lock` 提供完整锁定版本。
+- 分发已提供 **onedir 打包**（`build.spec`，含图标与版本信息、`console` 可配置）与 **Inno Setup 安装包脚本**（`installer/file-xray.iss`）；尚未做桌面外壳（Tauri / Electron）。
+- `requirements.txt` 中错误的 `tesseract` 包已改为 `pytesseract`。
 
-## 1. 外部评审报告逐条核验
+## 1. 外部评审报告逐条核验（已按现状更新）
 | 报告观点 | 核验结论 | 说明 |
 |---|---|---|
-| 无 LICENSE | 属实 | 目录无 LICENSE 文件 |
-| 无测试 / CI | 属实 | 无 tests、无 CI 配置 |
-| 索引更新策略不明 | 部分纠正 | 已有手动重扫且保留元数据；缺增量/自动感知（无 watchdog） |
-| 依赖未锁定（>=） | 属实 | 建议锁定版本 |
-| 无 API 鉴权 / 路径穿越防护 | 属实 | 后端无 token，有完整文件权限 |
-| 单体本地架构、建议 Tauri/Electron | 合理 | 长期方向 |
+| 无 LICENSE | 已修复 | 目录已有 LICENSE（MIT） |
+| 无测试 / CI | 部分修复 | 已有 CI 构建流水线；仍无自动化测试（目前以点测为主） |
+| 索引更新策略不明 | 已修复 | 手动 + 增量扫描、watchdog 实时感知、missing 标记 |
+| 依赖未锁定（>=） | 部分修复 | `requirements.txt` 仍为下限约束；新增 `requirements.lock` 完整锁定 |
+| 无 API 鉴权 / 路径穿越防护 | 已修复 | 本地 token + 写接口体积上限 + 打开/导出路径校验 |
+| 单体本地架构、建议 Tauri/Electron | 保持 | 已完成 PyInstaller onedir + Inno Setup 安装包；Tauri 外壳仍作为长期方向 |
 | 隐私本地回环 | 属实 | HOST 默认 127.0.0.1 |
-| 中文 OCR/转写是竞争力关键 | 合理 | Umi-OCR 优先 + tesseract 兜底策略成立 |
+| 中文 OCR/转写是竞争力关键 | 合理 | Umi-OCR 优先 + tesseract + 浏览器 WASM 三级兜底策略成立 |
 
 ## 2. 后续方向与优化规划
 
@@ -109,7 +111,8 @@
   若当前文件量下搜索本来就很快，关掉即可，不加额外索引开销。
 
 ## 5. 剩余方向（P2 / 待定）
-- 桌面封装（Tauri / Electron）— 暂缓
-- 抽取能力插件化（便于扩展新格式）
+- 桌面封装（Tauri / Electron）— 暂缓（PyInstaller onedir + Inno Setup 安装包已可用）
+- 抽取能力插件化（便于扩展新格式）— 未开始
 - 批量操作增强：按项目批量移动 / 重命名源文件
 - 项目导出 / 导入（把一组根目录与项目设置存成配置，便于换机复用）
+- 自动化测试（当前以点测验收为主）

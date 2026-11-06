@@ -154,19 +154,45 @@ async function pollProjectScan(sids){
   document.getElementById('scanOverlay').classList.add('show');
   document.getElementById('scanRoot').textContent='正在重新扫描项目…';
   const pending=new Set(sids);
-  let total=0, ocrJob=null;
+  let total=0, ocrJob=null, failed=0, lastErr='', skipped=[], errors=[];
   while(pending.size){
     await new Promise(res=>setTimeout(res,500));
     for(const sid of Array.from(pending)){
       try{
         const r=await apiGet('/api/scan/'+sid);
-        if(r.done){ pending.delete(sid); total+=r.processed||0; if(r.ocr_job_id) ocrJob=r.ocr_job_id; }
-      }catch(e){ pending.delete(sid); }
+        if(r.done){
+          pending.delete(sid); total+=r.processed||0;
+          if(r.ocr_job_id) ocrJob=r.ocr_job_id;
+          if(r.error){ failed++; lastErr=r.error; }
+          if(r.skipped) skipped=skipped.concat(r.skipped);
+          if(r.errors) errors=errors.concat(r.errors);
+        }
+      }catch(e){ pending.delete(sid); failed++; lastErr=e.message; }
     }
     document.getElementById('scanNum').textContent=total.toLocaleString();
   }
-  document.getElementById('scanOverlay').classList.remove('show');
-  toast('项目扫描完成，共 '+total.toLocaleString()+' 个文件');
+  if(failed){
+    toast('扫描结束，但有 '+failed+' 个任务异常：'+lastErr);
+  }else{
+    toast('项目扫描完成，共 '+total.toLocaleString()+' 个文件');
+  }
+  const issues=skipped.length+errors.length;
+  const box=document.getElementById('scanIssues');
+  const closeBtn=document.getElementById('scanIssuesClose');
+  if(issues){
+    // 保留浮层，让用户能展开查看“哪些文件没取到内容、为什么”
+    box.style.display='block';
+    box.innerHTML='<details open><summary>'+issues+' 个文件未完成内容抽取（跳过 '+skipped.length+' / 异常 '+errors.length+'）</summary>'+
+      skipped.map(x=>'<div class="log-item">跳过：'+esc(x.path)+'（'+esc(x.reason)+'）</div>').join('')+
+      errors.map(x=>'<div class="log-item log-err">异常：'+esc(x.path)+'（'+esc(x.error)+'）</div>').join('')+
+      '</details>';
+    closeBtn.style.display='inline-block';
+    closeBtn.onclick=()=>{ box.style.display='none'; closeBtn.style.display='none';
+                           document.getElementById('scanOverlay').classList.remove('show'); };
+  }else{
+    box.style.display='none'; closeBtn.style.display='none';
+    document.getElementById('scanOverlay').classList.remove('show');
+  }
   await loadProjects(); await loadStats(); await loadTree(); await loadTags(); await loadFiles();
   // 扫描触发的扫描件 PDF 后台补识别：原生引擎任务接着展示进度；
   // 无原生引擎但浏览器内置 OCR 可用时，由前端驱动批量补识别

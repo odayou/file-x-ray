@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Request, HTTPException, Query, Body, UploadFile, Form, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, HTMLResponse, Response
+from fastapi import APIRouter, Request, HTTPException
+import logging
 from xray.config import *
 from xray.ocr import ocr_is_available, wasm_available
 router = APIRouter()
+_log = logging.getLogger("xray")
 
 @router.get("/api/tags")
 def get_tags(project: int = 0):
@@ -195,6 +196,27 @@ def get_tree(depth: int = 99, project: int = 0):
     return {"folders": result}
 
 # ---------- 文件清单 ----------
+@router.get("/api/files/exist")
+def files_exist(ids: str = ""):
+    """轻量校验：返回给定 id 中仍存在的那些（前端清理失效勾选，避免“已选 N”混入幽灵记录）。"""
+    want = []
+    for x in (ids or "").split(","):
+        x = x.strip()
+        if x.isdigit():
+            want.append(int(x))
+    want = want[:5000]
+    if not want:
+        return {"ids": []}
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id FROM files WHERE id IN (%s)" % ",".join("?" * len(want)),
+            want).fetchall()
+    finally:
+        conn.close()
+    return {"ids": [r["id"] for r in rows]}
+
+
 @router.get("/api/files")
 def list_files(search: str = "", status: str = "all", ext: str = "", folder: str = "",
                tag: str = "", page: int = 1, page_size: int = 100, sort: str = "name",
@@ -222,9 +244,28 @@ def list_files(search: str = "", status: str = "all", ext: str = "", folder: str
         # FTS 查询异常（特殊字符等）时回退 LIKE，保证搜索始终可用
         total, rows, used_fts = _run(True)
     items = apply_project_view([dict(r) for r in rows], scope[2])
+    # 搜索时补充“定位到具体位置”：命中次数 + 服务端截取的上下文片段。
+    # 只查当前页（≤ SNIPPET_MAX_ROWS 行）的正文/转写，避免把 20 万字正文整段发给前端。
+    terms = search_terms(search)
+    if terms and items:
+        body_ids = [it["id"] for it in items[:SNIPPET_MAX_ROWS]]
+        marks = ",".join("?" * len(body_ids))
+        body_rows = conn.execute(
+            "SELECT id, content, transcript FROM files WHERE id IN (%s)" % marks,
+            body_ids).fetchall()
+        body_map = {r["id"]: r for r in body_rows}
+        for it in items:
+            row = body_map.get(it["id"])
+            if row is None:      # 超出片段行数上限的条目只保留原有字段（前端不会误判）
+                continue
+            info = build_hit_info(it.get("name"), it.get("note"), it.get("tags"),
+                                  row["content"], row["transcript"], search)
+            if info:
+                it["hits"] = info
     conn.close()
     return {"items": items, "total": total, "page": page, "page_size": page_size,
-            "fts": bool(used_fts)}
+            "fts": bool(used_fts), "terms": terms,
+            "snippet_show": SNIPPET_SHOW}
 
 # ---------- 文件详情 ----------
 @router.post("/api/file/{fid}/text")
@@ -237,7 +278,9 @@ async def resolve_pending(fid: int, request: Request):
     action = (data.get("action") or "").strip()
     conn = get_db()
     try:
-        r = conn.execute("SELECT id,pending_text,transcript FROM files WHERE id=?", (fid,)).fetchone()
+        r = conn.execute(
+            "SELECT id,ext,pending_text,pending_kind,content,content_source,transcript "
+            "FROM files WHERE id=?", (fid,)).fetchone()
         if not r:
             raise HTTPException(404, "未找到文件")
         if action == "accept":
@@ -247,20 +290,51 @@ async def resolve_pending(fid: int, request: Request):
             text = (text or "").strip()
             if not text:
                 raise HTTPException(400, "暂存内容为空，无可采用的内容")
-            conn.execute(
-                "UPDATE files SET transcript=?, transcribed_at=?, pending_text='', pending_kind='' "
-                "WHERE id=?", (text, time.time(), fid))
+            kind = (r["pending_kind"] or "").strip()
+            cat = categorize(r["ext"] or "")
+            # 按文件类型写正确字段：PDF 类 -> content（详情映射为 pdf_text），
+            # 图片/音视频 -> transcript。类型与暂存来源不匹配时明确报错，不静默丢弃。
+            if cat == "pdf":
+                if kind and kind not in ("ocr", "pdf"):
+                    _log.warning("采用暂存失败：PDF %s 的暂存来源为 %s，类型不匹配", fid, kind)
+                    raise HTTPException(400, "该 PDF 的暂存结果来源为「%s」，与 PDF 文字字段不匹配，已拒绝写入" % kind)
+                conn.execute(
+                    "UPDATE files SET content=?, content_source='ocr', "
+                    "pending_text='', pending_kind='' WHERE id=?", (text, fid))
+                target = "content"
+            elif cat in ("image", "audio", "video"):
+                expect = "ocr" if cat == "image" else "transcribe"
+                if kind and kind != expect:
+                    _log.warning("采用暂存失败：%s 类文件 %s 的暂存来源为 %s，应为 %s",
+                                 cat, fid, kind, expect)
+                    raise HTTPException(
+                        400, "该文件（%s）的暂存结果来源为「%s」，应为「%s」，字段不匹配，已拒绝写入"
+                             % (cat, kind, expect))
+                conn.execute(
+                    "UPDATE files SET transcript=?, transcribed_at=?, pending_text='', pending_kind='' "
+                    "WHERE id=?", (text, time.time(), fid))
+                target = "transcript"
+            else:
+                _log.warning("采用暂存失败：文件 %s（ext=%s）不支持文字结果", fid, r["ext"])
+                raise HTTPException(
+                    400, "该文件类型（%s）不支持文字结果，无法采用" % (r["ext"] or "未知"))
         elif action == "discard":
             conn.execute("UPDATE files SET pending_text='', pending_kind='' WHERE id=?", (fid,))
+            target = ""
         else:
             raise HTTPException(400, "未知操作：" + action)
         conn.commit()
-        row = conn.execute("SELECT transcript,pending_text,pending_kind FROM files WHERE id=?",
-                           (fid,)).fetchone()
+        row = conn.execute(
+            "SELECT content,content_source,transcript,pending_text,pending_kind FROM files WHERE id=?",
+            (fid,)).fetchone()
     finally:
         conn.close()
-    return {"ok": True, "transcript": row["transcript"] or "",
-            "pending_text": row["pending_text"] or "", "pending_kind": row["pending_kind"] or ""}
+    return {"ok": True, "target": target,
+            "transcript": row["transcript"] or "",
+            "pdf_text": (row["content"] or "") if target == "content" else "",
+            "content_source": row["content_source"] or "",
+            "pending_text": row["pending_text"] or "",
+            "pending_kind": row["pending_kind"] or ""}
 
 
 @router.get("/api/file/{fid}")
@@ -287,13 +361,18 @@ def file_detail(fid: int):
                 preview = f.read(100000)
         except Exception:
             preview = ""
-    d["preview_text"] = preview if cat == "text" else ""
+    # 文本与三种 Office 文档都直接展示抽取正文；Office 另外给出 doc_text，
+    # 与 PDF 的 pdf_text 对称，避免“库里有值、界面没字”。
+    d["preview_text"] = preview if cat in ("text", "doc") else ""
+    d["doc_text"] = (d["content"] or "") if cat == "doc" else ""
     d["tags"] = parse_tags(d["tags"])
     d["exists"] = os.path.isfile(d["path"]) or os.path.isdir(d["path"])
     d["missing"] = bool(d.get("missing") or 0)
     d["color"] = status_color(d["status"])
     d["transcript"] = d.get("transcript") or ""
     d["transcribed_at"] = d.get("transcribed_at") or None
+    # 该文件最后一次转写使用的提示词（空=沿用全局默认；off=关闭）
+    d["prompt"] = d.get("prompt") or ""
     d["pending_text"] = d.get("pending_text") or ""
     d["pending_kind"] = d.get("pending_kind") or ""
     d["can_transcribe"] = (d["category"] in ("audio", "video")) and bool(d["exists"])

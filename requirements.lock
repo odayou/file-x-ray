@@ -1,0 +1,49 @@
+# 完整锁定文件（由 requirements.txt 解析生成，等价于 pip-compile 结果）
+#
+# 用途：pip install -r requirements.lock → 得到与本机验证过的完全一致的版本组合。
+# 更新：修改 requirements.txt 后重新生成本文件（保留 requirements.txt 作为人工维护入口）。
+# 说明：版本由生成时的实际运行环境确定（含全部传递依赖，不含 optional extras）。
+# 关键约束：av 固定为 18.x —— faster-whisper 1.2.1 仍传 metadata_errors，PyAV 19 已移除该参数。
+
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.14.2
+av==18.1.0
+click==8.5.0
+colorama==0.4.6
+ctranslate2==4.8.4
+fastapi==0.162.0
+faster-whisper==1.2.1
+filelock==4.2.4
+flatbuffers==25.12.19
+fsspec==2026.9.0
+h11==0.16.0
+hf-xet==1.7.1
+httpcore2==2.16.0
+httpx2==2.16.0
+huggingface-hub==2.3.0
+idna==3.20
+networkx==3.7
+numpy==2.2.3
+onnxruntime==1.31.1
+opentelemetry-api==1.45.1
+packaging==24.2
+pillow==11.1.0
+protobuf==7.36.2
+psutil==7.0.0
+pydantic==2.13.5
+pydantic-core==2.46.5
+pymupdf==2.0
+pymupdf-layout==2.0
+pymupdf4llm==2.0
+pytesseract==0.3.13
+pyyaml==6.0.2
+starlette==1.10.0
+tabulate==0.10.0
+tokenizers==0.23.3
+tqdm==4.70.1
+truststore==0.10.5
+typing-extensions==4.14.1
+typing-inspection==0.4.2
+uvicorn==0.54.0
+watchdog==6.0.0

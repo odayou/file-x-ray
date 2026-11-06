@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Request, HTTPException, Query, Body, UploadFile, Form, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, HTMLResponse, Response
+from fastapi import APIRouter, Request, HTTPException
 from xray.config import *
+from xray.extractors import extract_for_scan
 router = APIRouter()
 
 def find_orphan(conn, new_path, name, size, mtime):
@@ -112,11 +112,40 @@ def relocate_records(conn, old_prefix, new_prefix):
 # scan_state 定义于 xray.config（基础模块，无兄弟依赖），本模块经 `from xray.config import *` 共享同一字典
 # ----------------------------------------------------------------------------
 
+# P4：同一根目录同时只允许一个扫描任务。scan_worker 里“先把本根目录 missing=1
+# 再逐条清 0”，两个写者并行会互相把对方的标记冲掉，必须在此处串行化。
+# watchdog 的单文件索引 _index_single 不受此限（它只更新单条记录）。
+_active_roots = {}
+_roots_lock = threading.Lock()
+
+
+def _root_key(p):
+    return os.path.normcase(os.path.abspath(p)).rstrip("\\/")
+
+
+def _reserve_root(root, sid):
+    """占用根目录；成功返回 None，已被占用返回现有 scan_id。"""
+    k = _root_key(root)
+    with _roots_lock:
+        busy = _active_roots.get(k)
+        if busy is not None:
+            return busy
+        _active_roots[k] = sid
+        return None
+
+
+def _release_root(root):
+    k = _root_key(root)
+    with _roots_lock:
+        _active_roots.pop(k, None)
+
+
 def scan_worker(root, max_depth, scan_id, project_id=None):
-    # 惰性导入：extract_pdf_text/_start_pdf_backlog_ocr 在 ocr 模块，ocr 又依赖本模块的 store_recognized，
+    # 惰性导入：_start_pdf_backlog_ocr 在 ocr 模块，ocr 又依赖本模块的 store_recognized，
     # 顶层互导会形成循环；此处用函数内导入打破循环（模块均已加载，运行时安全）。
-    from xray.ocr import extract_pdf_text, _start_pdf_backlog_ocr
+    from xray.ocr import _start_pdf_backlog_ocr
     conn = get_db()
+    job_create(scan_id, "scan", root, project_id or 0)
     try:
         count = 0
         # 先把本根目录下已有记录标记为“待复核”，扫描中命中即清零；
@@ -129,6 +158,7 @@ def scan_worker(root, max_depth, scan_id, project_id=None):
                 dirnames[:] = []
             # P2：排除规则——命中则整棵子树跳过（不入库、不 descend）
             if is_excluded(dirpath):
+                dirnames[:] = []          # 整棵子树跳过：既不descend，也不入库
                 continue
             dirnames[:] = [d for d in dirnames if not is_excluded(os.path.join(dirpath, d))]
             # 物化目录为 files 表中的一等实体（is_dir=1）：空目录也作为节点出现，且可被打标签/备注。
@@ -149,8 +179,9 @@ def scan_worker(root, max_depth, scan_id, project_id=None):
                         "status,note,tags,content,indexed_at,is_dir) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
                         (dirpath, rel_d, name_d, "", parent_d, 0, st_dir.st_mtime, depth,
                          "未处理", "", "", "", time.time()))
-            except Exception:
+            except Exception as e:
                 _log.debug("目录 stat/入库失败，已跳过：%s", dirpath, exc_info=True)
+                _rec_error(scan_id, dirpath, e)
             for fn in filenames:
                 full = os.path.join(dirpath, fn)
                 if is_excluded(full):        # P2：命中排除规则的文件直接跳过（不入库）
@@ -159,8 +190,9 @@ def scan_worker(root, max_depth, scan_id, project_id=None):
                     st = os.lstat(full)
                     if not os.path.isfile(full):
                         continue
-                except Exception:
+                except Exception as e:
                     _log.debug("文件 lstat 失败，已跳过：%s", full, exc_info=True)
+                    _rec_error(scan_id, full, e)
                     continue
                 # 增量：大小与 mtime 均未变化则跳过抽取与写入，完整保留备注/状态/标签/转写/识别结果
                 existing = conn.execute(
@@ -171,6 +203,7 @@ def scan_worker(root, max_depth, scan_id, project_id=None):
                     if count % 200 == 0:
                         conn.commit()
                         scan_state[scan_id]["processed"] = count
+                        job_update(scan_id, done=count, current=fn)
                     continue
                 rel = os.path.relpath(full, root)
                 ext = os.path.splitext(fn)[1].lower()
@@ -180,29 +213,22 @@ def scan_worker(root, max_depth, scan_id, project_id=None):
                 moved_id = None
                 if not existing:
                     moved_id = find_orphan(conn, full, fn, st.st_size, st.st_mtime)
-                # 仅对文本/PDF 抽取可搜索文字；图片 OCR、音视频转写为按需，重扫不覆盖。
-                # 文本判定：清单内直接命中；清单外先内容嗅探（未知新类型零维护自动覆盖）
-                content = ""
-                is_text = ext in TEXT_EXTS or (
-                    ext not in KNOWN_BIN_EXTS and st.st_size <= FILE_READ_LIMIT and sniff_text(full))
-                is_pdf = ext in PDF_EXTS
-                if is_text and st.st_size <= FILE_READ_LIMIT:
-                    try:
-                        with open(full, "r", encoding="utf-8", errors="ignore") as f:
-                            content = f.read(CONTENT_INDEX_LIMIT)
-                    except Exception:
-                        _log.debug("文本读取失败，内容留空：%s", full, exc_info=True)
-                        content = ""
-                        _rec_skip(scan_id, full, "text_read_failed")
-                elif is_pdf and st.st_size <= FILE_READ_LIMIT:
-                    try:
-                        content = extract_pdf_text(full)[:PDF_TEXT_LIMIT]
-                    except Exception:
-                        _log.debug("PDF 文字层抽取失败，内容留空：%s", full, exc_info=True)
-                        content = ""
-                        _rec_skip(scan_id, full, "pdf_extract_failed")
-                    # 扫描件/无文字层的 OCR 不在此处同步做（会拖慢扫描）：
-                    # 扫描结束后由后台任务统一补识别（见 _start_pdf_backlog_ocr）。
+                # 可搜索文字抽取统一走有序注册表（文本 / PDF / docx / xlsx / pptx）。
+                # 图片 OCR、音视频转写为按需，重扫不覆盖（注册表里 auto=False，行为不变）。
+                outcome = extract_for_scan(full, ext, st.st_size)
+                content, source, truncated, write_content = "", "", 0, False
+                if outcome is not None:
+                    content = outcome.text
+                    write_content = outcome.write
+                    if write_content:
+                        # 与旧逻辑一致：只有真正写正文时才落 content_source / 截断标记
+                        source = outcome.source
+                        truncated = 1 if outcome.truncated else 0
+                    if outcome.skip_reason:
+                        _rec_skip(scan_id, full, outcome.skip_reason)
+                    if outcome.error is not None:
+                        _log.debug("Office 文档抽取失败，已跳过：%s", full, exc_info=True)
+                        _rec_error(scan_id, full, outcome.error)
                 if moved_id:
                     # 老文件换了位置/名字：整行迁移，标注零丢失
                     conn.execute(
@@ -212,9 +238,10 @@ def scan_worker(root, max_depth, scan_id, project_id=None):
                          time.time(), moved_id),
                     )
                     # PDF 抽不到文字层时保留旧内容（可能 是此前 OCR 的结果），不被空值冲掉
-                    if is_text or (is_pdf and (content or "").strip()):
-                        conn.execute("UPDATE files SET content=?, content_source=? WHERE id=?",
-                                     (content, "text_layer" if is_pdf else "", moved_id))
+                    if write_content:
+                        conn.execute(
+                            "UPDATE files SET content=?, content_source=?, content_truncated=? WHERE id=?",
+                            (content, source, truncated, moved_id))
                 else:
                     # 入库：先插入（已存在则忽略），再更新可变元数据，避免冲掉备注/状态/转写/识别结果
                     conn.execute(
@@ -228,27 +255,39 @@ def scan_worker(root, max_depth, scan_id, project_id=None):
                            WHERE path=?""",
                         (rel, fn, ext, parent, st.st_size, st.st_mtime, depth, time.time(), full),
                     )
-                    if is_text or (is_pdf and (content or "").strip()):
-                        conn.execute("UPDATE files SET content=?, content_source=? WHERE path=?",
-                                     (content, "text_layer" if is_pdf else "", full))
+                    if write_content:
+                        conn.execute(
+                            "UPDATE files SET content=?, content_source=?, content_truncated=? WHERE path=?",
+                            (content, source, truncated, full))
                 count += 1
                 if count % 200 == 0:
                     conn.commit()
                     scan_state[scan_id]["processed"] = count
+                    job_update(scan_id, done=count, current=fn)
         touch_project(conn, project_id)
         conn.commit()
         scan_state[scan_id]["processed"] = count
+        scan_state[scan_id]["total"] = count
         scan_state[scan_id]["done"] = True
         # 扫描完成：扫描件/无文字层 PDF 交给后台 OCR 队列（不阻塞扫描，进度走 /api/ocr/{jid}）
         try:
             scan_state[scan_id]["ocr_job_id"] = _start_pdf_backlog_ocr()
         except Exception as _e:
             print("启动扫描件补识别失败: %s" % _e)
+        job_update(scan_id, status="done", done=count, total=count,
+                   extra={"skipped": scan_state[scan_id].get("skipped", []),
+                          "errors": scan_state[scan_id].get("errors", []),
+                          "ocr_job_id": scan_state[scan_id].get("ocr_job_id")})
     except Exception as e:
         scan_state[scan_id]["error"] = str(e)
+        scan_state[scan_id]["total"] = scan_state[scan_id].get("processed", 0)
         scan_state[scan_id]["done"] = True
+        job_update(scan_id, status="error", error=str(e),
+                   extra={"skipped": scan_state[scan_id].get("skipped", []),
+                          "errors": scan_state[scan_id].get("errors", [])})
     finally:
         conn.close()
+        _release_root(root)
 
 # ----------------------------------------------------------------------------
 # 打开文件夹
@@ -256,9 +295,27 @@ def scan_worker(root, max_depth, scan_id, project_id=None):
 @router.get("/api/excludes")
 def api_excludes():
     conn = get_db()
-    rows = conn.execute("SELECT id, pattern, added_at FROM app_excludes ORDER BY id").fetchall()
+    rows = conn.execute("SELECT id, pattern, added_at, builtin FROM app_excludes ORDER BY builtin DESC, id").fetchall()
     conn.close()
     return {"excludes": [dict(r) for r in rows], "count": len(rows)}
+
+
+@router.post("/api/excludes/restore")
+def restore_default_excludes():
+    """把缺失的内置默认规则补回来（显式操作；不改动、不删除用户自建规则）。"""
+    conn = get_db()
+    added = 0
+    try:
+        for pat in DEFAULT_EXCLUDES:
+            cur = conn.execute("INSERT OR IGNORE INTO app_excludes(pattern, added_at, builtin) VALUES(?,?,1)",
+                               (pat, time.time()))
+            if cur.rowcount and cur.rowcount > 0:
+                added += 1
+        conn.commit()
+    finally:
+        conn.close()
+    load_excludes()
+    return {"ok": True, "added": added}
 
 
 @router.post("/api/excludes")
@@ -293,7 +350,13 @@ async def delete_exclude(request: Request):
 
 @router.post("/api/excludes/prune")
 async def prune_excludes(request: Request):
-    """按当前排除规则清理已索引文件（仅 DELETE FROM files，不碰磁盘）。返回删除条数。"""
+    """按当前排除规则清理已索引文件（仅 DELETE FROM files，不碰磁盘）。返回删除条数。
+
+    必须显式传 confirm=true，避免被误调用而删除存量索引。
+    """
+    data = await request.json()
+    if not data.get("confirm"):
+        raise HTTPException(400, "清理索引需要显式确认：请求体需传 confirm=true")
     conn = get_db()
     try:
         rows = conn.execute("SELECT id, path FROM files").fetchall()
@@ -462,8 +525,22 @@ def scan_project(pid: int):
         c.commit()
         c.close()
         sid = "%d_%d" % (int(time.time() * 1000), i)
-        scan_state[sid] = {"processed": 0, "done": False, "error": None,
-                          "root": r, "project_id": pid, "skipped": [], "errors": []}
+        busy = _reserve_root(r, sid)
+        if busy:
+            for prev in sids:
+                try:
+                    conn = get_db()
+                    conn.execute("UPDATE jobs SET status='aborted' WHERE id=?", (prev,))
+                    conn.commit()
+                    conn.close()
+                except Exception:
+                    pass
+            for rr in roots[:i]:
+                _release_root(rr)
+            raise HTTPException(409, "根目录正在扫描中：%s（任务 %s），请稍后重试" % (r, busy))
+        scan_state[sid] = {"processed": 0, "total": 0, "done": False, "error": None,
+                          "root": r, "project_id": pid, "skipped": [], "errors": [],
+                          "ocr_job_id": None}
         threading.Thread(target=scan_worker, args=(r, md, sid, pid), daemon=True).start()
         sids.append(sid)
     watch_add_roots(roots)
@@ -506,9 +583,51 @@ async def start_scan(request: Request):
     conn.commit()
     conn.close()
     sid = str(int(time.time() * 1000))
-    scan_state[sid] = {"processed": 0, "done": False, "error": None,
-                      "root": root, "project_id": pid, "skipped": [], "errors": []}
+    busy = _reserve_root(root, sid)
+    if busy:
+        raise HTTPException(409, "该根目录正在扫描中（任务 %s），请稍后重试" % busy)
+    scan_state[sid] = {"processed": 0, "total": 0, "done": False, "error": None,
+                      "root": root, "project_id": pid, "skipped": [], "errors": [],
+                      "ocr_job_id": None}
     t = threading.Thread(target=scan_worker, args=(root, max_depth, sid, pid), daemon=True)
     t.start()
     return {"scan_id": sid, "project_id": pid}
+
+
+@router.get("/api/scan/{sid}")
+def scan_progress(sid: str):
+    """扫描进度：供前端进度浮层轮询。
+
+    字段契约（web/projects.js 依赖）：processed / total / done / error /
+    skipped / errors / ocr_job_id。内存态优先；进程重启后从 jobs 表回放
+    （此时 done=true、status=aborted，前端据此提示“上次扫描中断”）。
+    """
+    stt = scan_state.get(sid)
+    if stt:
+        return stt
+    row = job_get(sid)
+    if not row:
+        raise HTTPException(404, "无此扫描任务（可能已过期或服务已重启）")
+    try:
+        extra = json.loads(row["extra"] or "{}")
+    except Exception:
+        extra = {}
+    return {"processed": row["done"] or 0, "total": row["total"] or 0,
+            "done": row["status"] != "running", "error": row["error"],
+            "skipped": extra.get("skipped", []), "errors": extra.get("errors", []),
+            "ocr_job_id": extra.get("ocr_job_id"),
+            "status": row["status"], "aborted": row["status"] == "aborted",
+            "root": row["root"], "project_id": row["project_id"]}
+
+
+@router.get("/api/jobs/interrupted")
+def interrupted_jobs():
+    """上次运行中残留的任务（启动时已标记 aborted），供界面提示。"""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id,kind,root,project_id,total,done,status,error,updated_at"
+        " FROM jobs WHERE status='aborted' ORDER BY updated_at DESC LIMIT 10").fetchall()
+    conn.close()
+    jobs = [dict(r) for r in rows]
+    return {"count": len(jobs), "jobs": jobs}
 

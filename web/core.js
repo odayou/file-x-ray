@@ -14,7 +14,9 @@
 
 const state = { search:"", status:"all", ext:"", type:"", folder:"", folderReal:"", tag:"", page:1, pages:1, pageSize:100, sort:"name", showAll:false,
                 selection:new Set(), currentId:null, statuses:[], whisper:null, ocr:null,
-                project:0, projects:[], showMissing:false };
+                project:0, projects:[], showMissing:false,
+                searchTerms:[],      // 实际参与文本匹配的高亮词（后端按 _build_where 的语义下发）
+                hit:null };          // 详情页命中定位参数 {q, field, occ}；null 表示不做命中定位
 let treeData = [];
 
 // ---------- 调试日志：累加记录所有 toast 提示，供“🐞 调试”面板查看/复制 ----------
@@ -55,7 +57,8 @@ function restoreState(){
       search:s.search||'', status:s.status||'all', ext:s.ext||'', type:s.type||'',
       showAll:!!s.showAll, showMissing:!!s.showMissing, page:s.page||1,
       currentId:s.currentId||null });
-    state.selection=new Set(s.selection||[]);
+    // 不恢复上次的勾选集合：记录可能已被删除或不再属于当前筛选，恢复后批量操作会作用到看不见的记录
+    state.selection=new Set();
     // 恢复输入控件（statusFilter 的选项是异步加载的，在其完成后单独回填）
     document.getElementById('searchInput').value=state.search;
     document.getElementById('typeFilter').value=state.type||'';
@@ -70,6 +73,37 @@ function restoreState(){
   }catch(e){ return false; }
 }
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// ---------- 搜索命中高亮（列表标题 / 列表片段 / 详情正文共用） ----------
+function escRe(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
+// 服务端片段用控制字符 \u0001/\u0002 做定界符（正文几乎不可能自带）。
+// 先整段转义再替换为 <mark>，所以正文里的 <script> 只会以纯文本出现，不会被浏览器执行。
+function snippetHtml(text){
+  return esc(text==null?'':String(text))
+    .split('\u0001').join('<mark class="hit-mark">')
+    .split('\u0002').join('</mark>');
+}
+// 一次性切分构建高亮 HTML（不逐个字符操作 DOM，也不做 O(n²) 字符串拼接）。
+// limit 控制最多标记多少处：20 万字的正文命中过多时只构建前 limit 个 <mark>，避免卡死。
+function highlightHtml(text, terms, limit){
+  text = (text==null?'':String(text));
+  const t = (terms||[]).filter(Boolean);
+  if(!t.length) return { html: esc(text), shown:0, total:0 };
+  const re = new RegExp('('+t.map(escRe).join('|')+')','gi');
+  limit = limit||300;
+  const out=[]; let last=0, total=0, shown=0, m;
+  while((m=re.exec(text))){
+    if(!m[0]){ re.lastIndex++; continue; }          // 空匹配保护
+    total++;
+    if(total<=limit){
+      out.push(esc(text.slice(last,m.index)));
+      out.push('<mark class="hit-mark">'+esc(m[0])+'</mark>');
+      last=m.index+m[0].length; shown++;
+    }
+  }
+  out.push(esc(text.slice(last)));
+  return { html:out.join(''), shown:shown, total:total };
+}
 function humanSize(b){ if(b==null) return ''; const u=['B','KB','MB','GB','TB']; let i=0,n=b; while(n>=1024&&i<u.length-1){n/=1024;i++;} return (i?n.toFixed(1):n)+' '+u[i]; }
 function fmtDate(ts){ if(!ts) return ''; return new Date(ts*1000).toLocaleString('zh-CN'); }
 function statusColor(label){ const s=state.statuses.find(x=>x.label===label); return s?s.color:'#999999'; }

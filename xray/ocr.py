@@ -4,8 +4,8 @@ import sys
 import time
 import logging
 import subprocess
-from fastapi import APIRouter, Request, HTTPException, Query, Body, UploadFile, Form, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, HTMLResponse, Response
+from fastapi import APIRouter, Request, HTTPException
+from fastapi.responses import FileResponse, Response
 from xray.config import *
 from xray.scan import store_recognized
 router = APIRouter()
@@ -20,8 +20,13 @@ def _load_fitz():
         import fitz
     return fitz
 
-def extract_pdf_text(path):
-    """抽取 PDF 文字内容（优先 PyMuPDF，回退 pypdf / pdfminer）。无文字层返回空。"""
+def extract_pdf_text(path, raise_on_error=False):
+    """抽取 PDF 文字内容（优先 PyMuPDF，回退 pypdf / pdfminer）。无文字层返回空。
+
+    raise_on_error=True 时，三种引擎全部失败会抛异常，供调用方区分
+    “扫描件/无文字层（合法空结果）”与“文件损坏/无法解析”。
+    """
+    last_err = None
     try:
         fitz = _load_fitz()
         doc = fitz.open(path)
@@ -29,18 +34,90 @@ def extract_pdf_text(path):
             return "\n".join(page.get_text() for page in doc)
         finally:
             doc.close()
-    except Exception:
-        pass
+    except Exception as e:
+        last_err = e
     try:
         from pypdf import PdfReader
         return "\n".join((p.extract_text() or "") for p in PdfReader(path).pages)
-    except Exception:
-        pass
+    except Exception as e:
+        last_err = e
     try:
         from pdfminer.high_level import extract_text as pm_extract
         return pm_extract(path)
+    except Exception as e:
+        last_err = e
+    if raise_on_error:
+        raise RuntimeError("PDF 文字抽取失败：%s" % (last_err or "无可用解析引擎"))
+    return ""
+
+PDF_TEXT_PAGE_MIN_CHARS = 8      # 抽样判定：单页至少要有这么多非空白字符才算“有文字层”
+PDF_TEXT_COVERAGE = 0.95         # 整本抽取时，有文字页占比达到该值即视为“全书有文字层”
+
+
+def pdf_page_texts(path):
+    """逐页抽取 PDF 文字层，返回按页序排列的字符串列表（PDF 无文字层时为等长空串）。
+
+    抽文字层比 OCR 快一到两个数量级，整本抽一遍用于“混合型”判定/合并是划算的。
+    """
+    fitz = _load_fitz()
+    doc = fitz.open(path)
+    try:
+        if doc.needs_pass:
+            raise RuntimeError("PDF 已加密，需密码才能读取")
+        return [(page.get_text() or "") for page in doc]
+    finally:
+        doc.close()
+
+
+def probe_pdf_text_layer(path, sample=12, min_chars=PDF_TEXT_PAGE_MIN_CHARS):
+    """快速抽样探测 PDF 是否有文字层（不做全量抽取）。
+
+    返回 {"pages": 总页数, "sampled": 抽样页数, "text_pages": 有文字页数,
+          "mode": "text" | "mixed" | "scan" | "unknown"}
+      text    = 抽样页全部有文字（全书或绝大多数页有文本，可直接搜索）
+      mixed   = 部分页有文字（混合型扫描件）
+      scan    = 抽样页全部无文字（纯扫描件，需要 OCR）
+      unknown = 无法解析/加密，交由调用方决定
+    抽样覆盖首尾与均匀分布，既便宜又能识别“中间几页是扫描页”的混合型。
+    """
+    out = {"pages": 0, "sampled": 0, "text_pages": 0, "mode": "unknown"}
+    try:
+        fitz = _load_fitz()
+        doc = fitz.open(path)
     except Exception:
-        return ""
+        return out
+    try:
+        if doc.needs_pass:
+            return out
+        n = doc.page_count
+        out["pages"] = n
+        if n <= 0:
+            return out
+        if n <= sample:
+            idxs = list(range(n))
+        else:
+            # 0, n-1 加上均匀分布取样：覆盖首页、尾页与全书各段
+            idxs = sorted(set(round(k * (n - 1) / (sample - 1)) for k in range(sample)))
+        out["sampled"] = len(idxs)
+        text_pages = 0
+        for i in idxs:
+            try:
+                s = (doc[i].get_text() or "").strip()
+            except Exception:
+                s = ""
+            if len(s) >= min_chars:
+                text_pages += 1
+        out["text_pages"] = text_pages
+        if text_pages == len(idxs):
+            out["mode"] = "text"
+        elif text_pages == 0:
+            out["mode"] = "scan"
+        else:
+            out["mode"] = "mixed"
+        return out
+    finally:
+        doc.close()
+
 
 def _umi_lang(tesseract_langs):
     """把 tesseract 语言串（chi_sim+eng）映射为 Umi-OCR 语言码（ch_and_en/ch/en）。"""
@@ -55,12 +132,13 @@ def _umi_lang(tesseract_langs):
         return "en"
     return "ch_and_en"
 
-def umi_ocr(path, langs=OCR_LANGS):
+def umi_ocr(path, langs=None):
     """通过 Umi-OCR 的 HTTP API 识别图片，返回文字；服务不可达/失败返回 None。
 
     Umi-OCR 的 /api/ocr 只接受 base64 字段（本机路径字段不存在），
     因此读取文件转 base64 上送；options 用 data.format=text 让返回为纯文本。
     """
+    langs = langs or OCR_LANGS
     import urllib.request
     import base64
     _ensure_umi_running()        # 已安装但未运行时按需拉起
@@ -95,7 +173,9 @@ def umi_ocr(path, langs=OCR_LANGS):
         return "\n".join(texts).strip()
     return None
 
-def tesseract_ocr(path, langs=OCR_LANGS):
+def tesseract_ocr(path, langs=None):
+    """tesseract 图片识别；langs 为空时用当前生效的 OCR_LANGS。"""
+    langs = langs or OCR_LANGS
     import pytesseract
     from PIL import Image
     img = Image.open(path)
@@ -105,8 +185,10 @@ def tesseract_ocr(path, langs=OCR_LANGS):
         pass
     return pytesseract.image_to_string(img, lang=langs).strip()
 
-def ocr_image(path, langs=OCR_LANGS):
+def ocr_image(path, langs=None):
     """图片 OCR：默认优先 Umi-OCR（中文识别更强），不可用时回退 tesseract。"""
+    reload_ocr_settings()
+    langs = langs or OCR_LANGS
     engine = (OCR_ENGINE or "auto").lower()
     if engine == "tesseract":
         return tesseract_ocr(path, langs)
@@ -161,35 +243,57 @@ def ocr_install_guide():
     return "请安装 Tesseract OCR 或 Umi-OCR（开启 HTTP 接口）后重试。"
 
 
-def ocr_pdf(path, langs=OCR_LANGS):
-    """扫描件/无文字层 PDF：逐页渲染为图片后 OCR，拼接返回文字。需 OCR 引擎可用。
+def ocr_pdf_pages(path, page_indices=None, langs=None, on_progress=None):
+    """对指定页做 OCR，返回 {页索引(0 起始): 文字}。page_indices=None 表示全部页。
 
-    受 PDF_OCR_MAX_PAGES 限制页数，防止超大扫描件拖死任务。
+    受 PDF_OCR_MAX_PAGES 限制（只取前 N 个待识别页），防止超大扫描件拖死任务。
+    on_progress(done_pages, total_pages)：每页识别后回调（用于真实页级进度）。
     """
+    reload_ocr_settings()
+    langs = langs or OCR_LANGS
     fitz = _load_fitz()
     doc = fitz.open(path)
     try:
         tmp_dir = os.path.join(tempfile.gettempdir(), "file_xray")
         os.makedirs(tmp_dir, exist_ok=True)
-        pages_text = []
-        for i, page in enumerate(doc):
-            if PDF_OCR_MAX_PAGES and i >= PDF_OCR_MAX_PAGES:
-                break
-            pix = page.get_pixmap(dpi=200)
+        if page_indices is None:
+            idxs = list(range(doc.page_count))
+        else:
+            idxs = [i for i in page_indices if 0 <= i < doc.page_count]
+        if PDF_OCR_MAX_PAGES:
+            idxs = idxs[:PDF_OCR_MAX_PAGES]
+        total = len(idxs)
+        if on_progress:
+            on_progress(0, total)
+        out = {}
+        for k, i in enumerate(idxs):
+            pix = doc[i].get_pixmap(dpi=200)
             tmp = os.path.join(tmp_dir, "pdfpage_%d_%d.png" % (os.getpid(), i))
             pix.save(tmp)
             try:
                 t = ocr_image(tmp, langs)
                 if t:
-                    pages_text.append(t)
+                    out[i] = t
             finally:
                 try:
                     os.remove(tmp)
                 except Exception:
                     pass
-        return "\n".join(pages_text).strip()
+            if on_progress:
+                on_progress(k + 1, total)
+        return out
     finally:
         doc.close()
+
+
+def ocr_pdf(path, langs=None, on_progress=None):
+    """扫描件/无文字层 PDF：逐页渲染为图片后 OCR，拼接返回文字。需 OCR 引擎可用。
+
+    受 PDF_OCR_MAX_PAGES 限制页数，防止超大扫描件拖死任务。
+    on_progress(done_pages, total_pages)：每页识别后回调（用于真实页级进度）。
+    """
+    pages = ocr_pdf_pages(path, None, langs, on_progress)
+    return "\n".join(pages[i] for i in sorted(pages)).strip()
 
 # ----------------------------------------------------------------------------
 # 指纹追认：文件改名 / 移动 / 所在目录改名 / 根目录改名后，把标注迁到新路径
@@ -252,6 +356,26 @@ OCR_AVAIL = None
 OCR_ERR = ""
 OCR_LANG_LIST = []
 
+
+def reload_ocr_settings():
+    """每次识别/检查前重新读取设置（保存后下一个任务即生效，无需重启）。
+
+    常量仍在模块级（供其它函数引用），这里按 _setting 的 env > config.json > 默认
+    优先级刷新，保证设置面板写入后立即被后续任务采用。
+    """
+    global OCR_ENGINE, OCR_LANGS, OCR_MAX_BYTES, UMI_OCR_URL, UMI_OCR_PATH, \
+        UMI_OCR_AUTOSTART, OCR_PDF_ENABLED, PDF_OCR_MAX_PAGES
+    OCR_ENGINE = setting("FIT_OCR_ENGINE", "ocr_engine", "auto")
+    OCR_LANGS = setting("FIT_OCR_LANGS", "ocr_langs", "chi_sim+eng")
+    OCR_MAX_BYTES = int(setting("FIT_OCR_MAX_MB", "ocr_max_mb", "30")) * 1024 * 1024
+    UMI_OCR_URL = str(setting("FIT_UMI_OCR_URL", "umi_ocr_url",
+                              "http://127.0.0.1:1224")).rstrip("/")
+    UMI_OCR_PATH = setting("FIT_UMI_OCR_PATH", "umi_ocr_path", "")
+    UMI_OCR_AUTOSTART = setting("FIT_UMI_OCR_AUTOSTART", "umi_ocr_autostart", "1")
+    OCR_PDF_ENABLED = str(setting("FIT_OCR_PDF", "ocr_pdf_enabled", "1")).lower() \
+        not in ("0", "false", "no")
+    PDF_OCR_MAX_PAGES = max(0, int(setting("FIT_PDF_OCR_PAGES", "pdf_ocr_max_pages", "200")))
+
 def ocr_check():
     """按当前引擎设置判断 OCR 是否可用。
 
@@ -260,6 +384,7 @@ def ocr_check():
     - auto：tesseract 可用，或 Umi-OCR 在线，二者其一即可
     Umi 在线状态每次实时探测（服务可能后启动），不缓存。
     """
+    reload_ocr_settings()
     engine = (OCR_ENGINE or "auto").lower()
     if engine in ("umi", "auto"):
         _ensure_umi_running()      # 已安装但未运行时按需拉起
@@ -380,6 +505,7 @@ def _start_pdf_backlog_ocr():
     多根目录扫描会各自触发一次，已有任务在跑时不重复起。
     """
     global _backlog_job_id
+    reload_ocr_settings()
     if not OCR_PDF_ENABLED or not ocr_is_available():
         return None
     if _backlog_job_id and ocr_jobs.get(_backlog_job_id) \
@@ -395,7 +521,9 @@ def _start_pdf_backlog_ocr():
     ids = [i for i, _ in items]
     jid = str(int(time.time() * 1000)) + "b"      # b = backlog，避免与手动任务撞号
     ocr_jobs[jid] = {"total": len(ids), "done": 0, "current": "", "error": None,
-                     "finished": False, "kind": "pdf"}
+                     "finished": False, "kind": "pdf", "status": "running", "stage": "",
+                     "pages_done": 0, "pages_total": 0}
+    job_create(jid, "ocr", "", 0, len(ids))
     _backlog_job_id = jid
     threading.Thread(target=ocr_worker, args=(ids, jid), daemon=True).start()
     print("扫描件 PDF 后台补识别已启动：%d 个文件" % len(ids))
@@ -404,12 +532,74 @@ def _start_pdf_backlog_ocr():
 
 ocr_jobs = {}
 
+
+def _pdf_ocr_guard(row, force=False):
+    """创建 OCR 任务前的文字层拦截。放行返回 None，拦截返回可读原因 dict。
+
+    两类拦截：
+      1) 该记录已有文字层来源的正式内容（content_source=text_layer）——用户遇到的场景；
+      2) 记录尚无内容，但抽样探测确认 PDF 有文字层（可直接搜索，无需慢速 OCR）。
+    混合型（部分页有文字）不拦截，由 worker 只 OCR 无文字的页。
+    """
+    if force or categorize(row["ext"]) != "pdf":
+        return None
+    path = row["path"]
+    content = (row["content"] or "").strip()
+    source = (row["content_source"] or "").strip()
+    if content and source == "text_layer":
+        return {"id": row["id"], "name": row["name"], "reason": "text_layer",
+                "message": "该 PDF 已有文字层文本（%d 字），可直接搜索，无需 OCR" % len(content)}
+    if not content and path and os.path.isfile(path):
+        probe = probe_pdf_text_layer(path)
+        if probe.get("mode") == "text":
+            return {"id": row["id"], "name": row["name"], "reason": "has_text_layer",
+                    "pdf_pages": probe.get("pages", 0),
+                    "sampled": probe.get("sampled", 0),
+                    "message": "该 PDF 检测到文字层（抽样 %d/%d 页有文本，共 %d 页），可直接搜索，无需识别"
+                               % (probe.get("text_pages", 0), probe.get("sampled", 0),
+                                  probe.get("pages", 0))}
+    return None
+
+
 def ocr_worker(ids, jid):
+    reload_ocr_settings()
     conn = get_db()
     try:
         total = len(ids); done = 0
+        errors = []
+        last_pub = [0.0]
+
+        def _publish(force=False):
+            """把内存进度落 jobs 表（重启后可回放）。节流 1s，避免每页都写库。"""
+            now = time.time()
+            if not force and now - last_pub[0] < 1.0:
+                return
+            last_pub[0] = now
+            j = ocr_jobs.get(jid) or {}
+            job_update(jid, done=j.get("done", 0), total=j.get("total", 0),
+                       current=j.get("current", ""),
+                       extra={"errors": errors,
+                              "pending": j.get("pending", 0),
+                              "stage": j.get("stage", ""),
+                              "pages_done": j.get("pages_done", 0),
+                              "pages_total": j.get("pages_total", 0)})
+
+        def _page_progress(pages_done, pages_total):
+            # 逐页回调：让界面在长任务期间看到真实页级推进，而不是停在 0/1
+            ocr_jobs[jid]["pages_done"] = pages_done
+            ocr_jobs[jid]["pages_total"] = pages_total
+            _publish()
+
+        def _stage(text):
+            ocr_jobs[jid]["stage"] = text
+            _publish()
+
         for fid in ids:
             ocr_jobs[jid]["current"] = ""
+            ocr_jobs[jid]["stage"] = "读取文件"
+            ocr_jobs[jid]["pages_done"] = 0
+            ocr_jobs[jid]["pages_total"] = 0
+            _publish()
             r = conn.execute("SELECT id,path,ext,name,content FROM files WHERE id=?", (fid,)).fetchone()
             if not r:
                 done += 1; ocr_jobs[jid]["done"] = done; continue
@@ -424,40 +614,92 @@ def ocr_worker(ids, jid):
                 if cat == "image" and os.path.getsize(path) > OCR_MAX_BYTES:
                     raise Exception("图片过大已跳过（>%dMB）" % (OCR_MAX_BYTES // 1024 // 1024))
                 if cat == "pdf":
-                    # 补识别（原本无内容）：先试文字层（快且精确），无文字层才 OCR；
-                    # 显式重新识别（已有内容）：直接 OCR（用户想重识）。
+                    _stage("抽取文字层")
+                    try:
+                        pages = pdf_page_texts(path)
+                    except Exception:
+                        pages = None
                     text = ""
                     src = "ocr"
-                    if not (r["content"] or "").strip():
-                        try:
-                            text = extract_pdf_text(path)[:PDF_TEXT_LIMIT]
-                        except Exception:
-                            text = ""
-                        if (text or "").strip():
+                    if pages:
+                        missing = [i for i, t in enumerate(pages) if not (t or "").strip()]
+                        # 小文档不做 5% 容差（否则“1 页扫描件”会被误判成全书有文字层）
+                        limit = 0 if len(pages) < 20 else max(
+                            1, int(len(pages) * (1 - PDF_TEXT_COVERAGE)))
+                        if len(pages) > len(missing) and len(missing) <= limit:
+                            # 全书（或绝大多数页）有文字层：直接写文字层，不跑 OCR
+                            text = "\n".join(pages)[:PDF_TEXT_LIMIT]
                             src = "text_layer"
-                    if not (text or "").strip():
-                        text = ocr_pdf(path)
+                        elif len(missing) < len(pages):
+                            # 混合型：只 OCR 没有文字层的页，其余沿用文字层（按页序合并）
+                            _stage("混合型：仅识别无文字页")
+                            got = ocr_pdf_pages(path, missing, on_progress=_page_progress)
+                            text = "\n".join(
+                                (got.get(i) or t or "") for i, t in enumerate(pages))
+                            src = "ocr"
+                        else:
+                            _stage("逐页 OCR")
+                            text = ocr_pdf(path, on_progress=_page_progress)
+                    else:
+                        # 文字层读取失败/为空：退回整本 OCR（无引擎/损坏会明确报错）
+                        _stage("逐页 OCR")
+                        text = ocr_pdf(path, on_progress=_page_progress)
                     if not (text or "").strip():
                         raise Exception("未识别出文字")
                     # PDF 识别结果直接进入 content（即界面“PDF 文字”），不进暂存
+                    _stage("写入索引")
                     conn.execute("UPDATE files SET content=?, content_source=? WHERE id=?",
                                  (text[:PDF_TEXT_LIMIT], src, fid))
+                    # 先提交再报完成：不提交就关闭连接会回滚（文本丢失），
+                    # 且未提交的写事务会让后面 job_update 的另一个连接自锁等待 busy_timeout。
+                    conn.commit()
                 else:
+                    _stage("识别图片")
                     text = ocr_image(path)
                     if not (text or "").strip():
                         raise Exception("未识别出文字")
+                    _stage("写入索引")
                     if store_recognized(conn, fid, text, "ocr"):
                         ocr_jobs[jid]["pending"] = ocr_jobs[jid].get("pending", 0) + 1
+                _stage("完成")
             except Exception as e:
-                # 失败时不写入，保留原有内容（绝不把旧结果冲掉）
-                ocr_jobs[jid].setdefault("errors", []).append(
-                    {"name": name, "error": str(e)})
+                # 失败时不写入，保留原有内容（绝不把旧结果冲掉）；先回滚未提交写事务，
+                # 避免它把 _publish 的另一个连接锁在 busy_timeout 上。
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                errors.append({"name": name, "error": str(e)})
+                _ocr_log.warning("识别失败 %s: %s", name, e, exc_info=True)
+                ocr_jobs[jid]["errors"] = errors
             done += 1
             ocr_jobs[jid]["done"] = done
+            _publish(force=True)
+        # 全部文件已处理：文本均已 commit 落库，先置内存完成标记，再做不持锁的 job_update。
+        # 状态语义：done=全部成功 / partial=部分失败 / failed=全部失败。
+        if errors and len(errors) >= total:
+            status = "failed"
+        elif errors:
+            status = "partial"
+        else:
+            status = "done"
+        ocr_jobs[jid]["status"] = status
+        ocr_jobs[jid]["stage"] = "处理完成" if status != "failed" else "识别失败"
         ocr_jobs[jid]["finished"] = True
+        job_update(jid, status=status, done=total, total=total,
+                   current=ocr_jobs[jid].get("current", ""),
+                   extra={"errors": errors,
+                          "pending": ocr_jobs[jid].get("pending", 0),
+                          "stage": ocr_jobs[jid]["stage"],
+                          "pages_done": ocr_jobs[jid].get("pages_done", 0),
+                          "pages_total": ocr_jobs[jid].get("pages_total", 0)})
     except Exception as e:
         ocr_jobs[jid]["error"] = str(e)
+        ocr_jobs[jid]["status"] = "failed"
         ocr_jobs[jid]["finished"] = True
+        job_update(jid, status="failed", error=str(e),
+                   extra={"errors": ocr_jobs[jid].get("errors", []),
+                          "stage": ocr_jobs[jid].get("stage", "")})
     finally:
         conn.close()
 
@@ -490,33 +732,78 @@ async def ocr_pdf_ids_ep(request: Request):
     ids = [int(i) for i in (data.get("ids") or []) if str(i).strip().isdigit()]
     if not ids:
         raise HTTPException(400, "未选择任何文件")
+    force = bool(data.get("force"))
     conn = get_db()
     qmarks = ",".join("?" * len(ids))
-    rows = conn.execute(f"SELECT id, ext FROM files WHERE id IN ({qmarks})", ids).fetchall()
+    rows = conn.execute(
+        f"SELECT id,path,ext,name,content,content_source FROM files WHERE id IN ({qmarks})",
+        ids).fetchall()
     conn.close()
-    out = [r["id"] for r in rows if categorize(r["ext"]) == "pdf"]
-    return {"ids": out, "skipped": len(ids) - len(out)}
+    out, blocked, skipped = [], [], 0
+    for r in rows:
+        if categorize(r["ext"]) != "pdf":
+            skipped += 1
+            continue
+        g = _pdf_ocr_guard(r, force)
+        if g:
+            blocked.append(g)
+            continue
+        out.append(r["id"])
+    return {"ids": out, "skipped": skipped, "blocked": blocked}
 
 @router.post("/api/ocr")
 async def start_ocr(request: Request):
     data = await request.json()
-    ids = data.get("ids", [])
-    if not ids:
+    raw_ids = [int(i) for i in (data.get("ids") or []) if str(i).strip().isdigit()]
+    if not raw_ids:
         raise HTTPException(400, "未选择任何文件")
+    force = bool(data.get("force"))
+    conn = get_db()
+    try:
+        qmarks = ",".join("?" * len(raw_ids))
+        rows = conn.execute(
+            f"SELECT id,path,ext,name,content,content_source FROM files WHERE id IN ({qmarks})",
+            raw_ids).fetchall()
+    finally:
+        conn.close()
+    by_id = {r["id"]: r for r in rows}
+    allowed, blocked = [], []
+    for fid in raw_ids:
+        r = by_id.get(fid)
+        g = _pdf_ocr_guard(r, force) if r else None
+        if g:
+            blocked.append(g)
+        else:
+            allowed.append(fid)
+    if not allowed:
+        # 全部被拦下：不创建任务，直接给出可读原因（前端据此提示并恢复按钮）
+        msg = blocked[0]["message"] if len(blocked) == 1 \
+            else "%d 个 PDF 已有文字层，可直接搜索，无需识别" % len(blocked)
+        return {"job_id": None, "skipped": blocked, "message": msg}
     avail, err, _ = ocr_check()
     if not avail:
         raise HTTPException(409, "OCR 当前不可用：" + err)
     jid = str(int(time.time() * 1000))
-    ocr_jobs[jid] = {"total": len(ids), "done": 0, "current": "", "error": None, "finished": False}
-    t = threading.Thread(target=ocr_worker, args=(ids, jid), daemon=True)
+    ocr_jobs[jid] = {"total": len(allowed), "done": 0, "current": "", "error": None,
+                     "finished": False, "status": "running",
+                     "stage": "", "pages_done": 0, "pages_total": 0}
+    job_create(jid, "ocr", "", 0, len(allowed))
+    t = threading.Thread(target=ocr_worker, args=(allowed, jid), daemon=True)
     t.start()
-    return {"job_id": jid}
+    msg = ""
+    if blocked:
+        msg = "%d 个 PDF 已有文字层已跳过，继续识别其余 %d 个文件" % (len(blocked), len(allowed))
+    return {"job_id": jid, "skipped": blocked, "message": msg}
 
 @router.get("/api/ocr/{jid}")
 def ocr_progress(jid: str):
     j = ocr_jobs.get(jid)
     if not j:
-        raise HTTPException(404, "无此识别任务")
+        # 内存态缺失（服务重启/任务被清理）：回落到 jobs 表，避免误报 404
+        row = job_get(jid)
+        if not row or row["kind"] != "ocr":
+            raise HTTPException(404, "无此识别任务")
+        return job_progress_from_row(row, "ocr")
     return j
 
 # ----------------------------------------------------------------------------

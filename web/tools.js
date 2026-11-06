@@ -105,6 +105,9 @@ async function refreshWatchBtn(){
     b.style.color = s.enabled ? '#fff' : '';
     b.title = s.watchdog_installed ? (s.error || '自动同步新增/修改/删除的文件')
                                    : '未安装 watchdog，请 pip install watchdog';
+    b.dataset.on = s.enabled ? '1' : '0';
+    b.classList.toggle('on', !!s.enabled);
+    updateMoreDot();                       // 感知状态收在菜单里，用小圆点提示
   }catch(e){}
 }
 async function toggleWatch(){
@@ -141,3 +144,176 @@ async function saveStatuses(){
     await loadStatuses(); if(state.currentId) selectFile(state.currentId); loadStats(); loadFiles();
     toast('状态已更新'); }catch(e){ toast('保存失败: '+e.message); }
 }
+
+// ---------- 排除规则 ----------
+async function renderExcludes(){
+  const box=document.getElementById('excludeList');
+  try{
+    const r=await apiGet('/api/excludes');
+    if(!r.excludes.length){
+      box.innerHTML='<div class="empty" style="padding:10px">暂无排除规则，所有目录都会被索引。'
+        +'（删除内置规则后不会再自动恢复，可用「恢复默认规则」找回）</div>';
+      return;
+    }
+    box.innerHTML=r.excludes.map(x=>`
+      <div class="root-row">
+        <input type="text" value="${esc(x.pattern)}" readonly>
+        ${x.builtin?'<span class="tag-builtin">内置</span>':''}
+        <button class="btn-danger btn-sm" data-eid="${x.id}">删</button>
+      </div>`).join('');
+    box.querySelectorAll('[data-eid]').forEach(b=>{
+      b.onclick=async()=>{
+        try{
+          await apiPost('/api/excludes/delete',{id:Number(b.dataset.eid)});
+          await renderExcludes();
+          toast('已删除规则；已索引的数据仍在，可点“清理已索引”后移除');
+        }catch(e){ toast('删除失败: '+e.message); }
+      };
+    });
+  }catch(e){
+    box.innerHTML='<div class="empty" style="padding:10px">加载失败：'+esc(e.message)+'</div>';
+  }
+}
+async function restoreDefaultExcludes(){
+  try{
+    const r=await apiPost('/api/excludes/restore',{});
+    await renderExcludes();
+    toast(r.added?('已恢复 '+r.added+' 条内置规则'):'内置规则已齐全，无需恢复');
+  }catch(e){ toast('恢复失败: '+e.message); }
+}
+async function openExcludeModal(){
+  document.getElementById('excludeInput').value='';
+  document.getElementById('excludeModal').classList.add('show');
+  await renderExcludes();
+}
+async function addExclude(){
+  const inp=document.getElementById('excludeInput');
+  const v=inp.value.trim();
+  if(!v){ toast('请先输入规则'); return; }
+  try{
+    await apiPost('/api/excludes',{pattern:v});
+    inp.value='';
+    await renderExcludes();
+    toast('已添加规则：'+v+'（重扫时生效；如需清理存量请点“清理已索引”）');
+  }catch(e){ toast('添加失败: '+e.message); }
+}
+async function pruneExcludes(){
+  if(!confirm('将按当前排除规则，从索引中删除命中的文件记录。\n\n只删除索引，不会删除磁盘上的任何文件。\n\n确定继续？')) return;
+  if(!confirm('再次确认：这些文件的备注 / 状态 / 标签会一并从索引移除，且无法通过界面恢复。仍要继续？')) return;
+  try{
+    const r=await apiPost('/api/excludes/prune',{confirm:true});
+    await loadStats(); loadFiles();
+    toast('已清理 '+(r.deleted||0)+' 条索引记录');
+  }catch(e){ toast('清理失败: '+e.message); }
+}
+document.getElementById('excludeBtn').onclick=openExcludeModal;
+document.getElementById('closeExclude').onclick=()=>document.getElementById('excludeModal').classList.remove('show');
+document.getElementById('addExcludeBtn').onclick=addExclude;
+document.getElementById('restoreExcludeBtn').onclick=restoreDefaultExcludes;
+document.getElementById('pruneExcludeBtn').onclick=pruneExcludes;
+document.getElementById('excludeInput').addEventListener('keydown',e=>{ if(e.key==='Enter') addExclude(); });
+
+// ---------- 设置面板 ----------
+// GET /api/settings 返回每项的元数据 + 当前生效值 + 来源（env/file/default），
+// 由后端下发的 schema 直接渲染，前端不重复维护键名与默认值。
+let settingsPayload=null;
+const SETTINGS_SRC_LABEL={env:'环境变量（只读）',file:'配置文件',default:'默认值'};
+
+function settingsControl(it){
+  const dis=it.locked?'disabled':'';
+  if(it.type==='enum'){
+    const opts=(it.options||[]).map(o=>
+      `<option value="${esc(o.value)}"${o.value===it.value?' selected':''}>${esc(o.label)}</option>`).join('');
+    return `<select data-key="${esc(it.key)}" ${dis}>${opts}</select>`;
+  }
+  if(it.type==='bool'){
+    return `<label class="chk"><input type="checkbox" data-key="${esc(it.key)}" ${it.value?'checked':''} ${dis}> 开启</label>`;
+  }
+  if(it.type==='int'){
+    return `<input type="number" data-key="${esc(it.key)}" value="${esc(String(it.value))}"`
+      +` min="${it.min!=null?it.min:''}" max="${it.max!=null?it.max:''}" ${dis}>`;
+  }
+  return `<input type="text" data-key="${esc(it.key)}" value="${esc(it.value)}"`
+    +` placeholder="${esc(it.placeholder||'')}" ${dis}>`;
+}
+
+function renderSettings(){
+  const body=document.getElementById('settingsBody');
+  if(!settingsPayload || !settingsPayload.settings){
+    body.innerHTML='<div class="empty">暂无设置项</div>'; return;
+  }
+  const groups=[];
+  settingsPayload.settings.forEach(it=>{
+    let g=groups.find(x=>x.name===it.group);
+    if(!g){ g={name:it.group,items:[]}; groups.push(g); }
+    g.items.push(it);
+  });
+  body.innerHTML=groups.map(g=>`
+    <div class="set-group">${esc(g.name)}</div>
+    ${g.items.map(it=>`
+      <div class="set-row">
+        <div class="set-top">
+          <span class="set-label">${esc(it.label)}</span>
+          <span class="set-src ${esc(it.source)}">${esc(SETTINGS_SRC_LABEL[it.source]||it.source)}</span>
+          <span class="set-eff">${esc(it.effect_text||'')}</span>
+        </div>
+        <div class="set-ctl">${settingsControl(it)}</div>
+        ${it.locked?`<div class="set-lock">该值由环境变量 <b>${esc(it.env)}</b> 控制，界面修改不会生效；如需在界面修改，请先移除该环境变量。</div>`:''}
+        <div class="set-help">${esc(it.help||'')}</div>
+      </div>`).join('')}`).join('');
+  const f=document.getElementById('settingsFile');
+  if(f) f.textContent='配置文件：'+(settingsPayload.config_file||'');
+  document.getElementById('settingsErr').textContent='';
+}
+
+async function openSettingsModal(){
+  document.getElementById('settingsModal').classList.add('show');
+  document.getElementById('settingsErr').textContent='';
+  document.getElementById('settingsBody').innerHTML='<div class="empty">加载中…</div>';
+  try{
+    settingsPayload=await apiGet('/api/settings');
+    renderSettings();
+  }catch(e){
+    document.getElementById('settingsBody').innerHTML='<div class="empty">加载失败：'+esc(e.message)+'</div>';
+  }
+}
+
+function closeSettingsModal(){
+  document.getElementById('settingsModal').classList.remove('show');
+}
+
+async function saveSettings(){
+  const err=document.getElementById('settingsErr');
+  err.textContent='';
+  if(!settingsPayload) return;
+  const values={};
+  document.querySelectorAll('#settingsBody [data-key]').forEach(el=>{
+    if(el.disabled) return;                     // 被环境变量锁住的项不提交
+    const k=el.dataset.key;
+    values[k]= el.type==='checkbox' ? (el.checked?'1':'0') : el.value;
+  });
+  try{
+    const r=await apiPost('/api/settings',{values});
+    settingsPayload=r;
+    renderSettings();
+    // 只对本次真正改动的项汇总生效时机，避免“保存了但不知道何时生效”
+    const effects=(r.changed||[]).map(k=>{
+      const it=(r.settings||[]).find(x=>x.key===k);
+      return it?it.effect_text:'';
+    }).filter((v,i,a)=>v && a.indexOf(v)===i);
+    let msg='设置已保存';
+    if(effects.length) msg+='（'+effects.join('、')+'）';
+    if(r.messages && r.messages.length) msg+='；'+r.messages.join('；');
+    toast(msg);
+    // 立即刷新顶部 OCR 徽标 / 转写状态，让用户保存后看到实际生效值
+    apiGet('/api/transcribe/check').then(x=>{ state.whisper=x; if(state.currentId) selectFile(state.currentId); }).catch(()=>{});
+    refreshOcrBadge();
+  }catch(e){
+    err.textContent='保存失败：'+e.message;
+    toast('保存失败：'+e.message);
+  }
+}
+
+document.getElementById('settingsBtn').onclick=openSettingsModal;
+document.getElementById('cancelSettings').onclick=closeSettingsModal;
+document.getElementById('saveSettingsBtn').onclick=saveSettings;

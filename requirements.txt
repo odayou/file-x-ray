@@ -5,7 +5,11 @@
 
 fastapi>=0.110
 uvicorn>=0.27
-faster-whisper>=1.0
+# 音视频转写：faster-whisper 1.2.1 仍向 av.open() 传 metadata_errors 参数，
+# 而 PyAV 19 已移除该参数，会直接抛 TypeError 导致转写全不可用。
+# 上游修复尚未发版，因此把 av 锁在 18.x；等 faster-whisper 1.2.2 发布后可解除。
+faster-whisper>=1.2.1,<1.3
+av>=18.1,<19
 pymupdf>=1.24
 pytesseract>=0.3.10
 pillow>=10.0

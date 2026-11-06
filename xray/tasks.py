@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Request, HTTPException, Query, Body, UploadFile, Form, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, HTMLResponse, Response
+from fastapi import APIRouter, Request, HTTPException
+from fastapi.responses import StreamingResponse
 from xray.config import *
-from xray.scan import scan_worker, relocate_records, update_project_roots_moved
-from xray.ocr import extract_pdf_text
+from xray.scan import relocate_records, update_project_roots_moved
+from xray.extractors import extract_for_scan
 router = APIRouter()
 
 def open_folder(path):
@@ -358,6 +358,8 @@ def _guess_root(path):
 
 def _index_single(path):
     """对单个文件重新索引：不存在则标记缺失；内容未变则跳过。"""
+    if is_excluded(path):                        # 排除规则同样适用于实时感知的增量索引
+        return
     conn = get_db()
     try:
         if not os.path.isfile(path):
@@ -386,32 +388,28 @@ def _index_single(path):
             parent = os.path.dirname(rel)
             depth = rel.count(os.sep)
         content = ""
-        is_text = ext in TEXT_EXTS or (
-            ext not in KNOWN_BIN_EXTS and st.st_size <= FILE_READ_LIMIT and sniff_text(path))
-        if is_text and st.st_size <= FILE_READ_LIMIT:
-            try:
-                with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read(CONTENT_INDEX_LIMIT)
-            except Exception:
-                content = ""
-        elif ext in PDF_EXTS and st.st_size <= FILE_READ_LIMIT:
-            try:
-                content = extract_pdf_text(path)[:PDF_TEXT_LIMIT]
-            except Exception:
-                content = ""
-            # 扫描件 OCR 不在此同步做：入库后由待识别池/后台任务统一补
+        source = ""
+        truncated = 0
+        write_content = False
+        outcome = extract_for_scan(path, ext, st.st_size)
+        if outcome is not None:
+            content = outcome.text
+            write_content = outcome.write
+            if write_content:
+                source = outcome.source
+                truncated = 1 if outcome.truncated else 0
         conn.execute(
-            """INSERT OR IGNORE INTO files(path,rel_path,name,ext,parent,size,mtime,depth,status,note,tags,content,content_source,indexed_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT OR IGNORE INTO files(path,rel_path,name,ext,parent,size,mtime,depth,status,note,tags,content,content_source,content_truncated,indexed_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (path, rel, fn, ext, parent, st.st_size, st.st_mtime, depth,
-             "未处理", "", "", content,
-             "text_layer" if (ext in PDF_EXTS and (content or "").strip()) else "", time.time()))
+             "未处理", "", "", content, source, truncated, time.time()))
         conn.execute(
             """UPDATE files SET rel_path=?,name=?,ext=?,parent=?,size=?,mtime=?,depth=?,indexed_at=?,missing=0
                WHERE path=?""",
             (rel, fn, ext, parent, st.st_size, st.st_mtime, depth, time.time(), path))
-        if is_text or ext in PDF_EXTS:
-            conn.execute("UPDATE files SET content=? WHERE path=?", (content, path))
+        if write_content:
+            conn.execute("UPDATE files SET content=?, content_source=?, content_truncated=? WHERE path=?",
+                         (content, source, truncated, path))
         conn.commit()
     finally:
         conn.close()

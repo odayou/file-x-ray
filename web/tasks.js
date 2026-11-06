@@ -45,4 +45,5 @@ function applyTaskResults(r2){
   }
   document.getElementById('listTitle').textContent='任务结果';
   document.getElementById('pageInfo').textContent='结果 '+r2.items.length+' 条（最多显示500）';
+  updateSelBar();                    // 任务结果也是文件清单，表头全选状态要跟着同步
 }

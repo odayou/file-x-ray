@@ -15,9 +15,16 @@ import webbrowser
 import atexit
 import threading
 
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+
+# PyInstaller 窗口模式（console=False）下 sys.stdout / sys.stderr 为 None，
+# print 会抛异常。统一兜底到 devnull，保证打包版不会因输出日志而崩溃。
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 # 领域模块（各自持有 APIRouter；共享的常量/DB/工具统一从 xray.config 导入）
 from xray import config as xconfig
@@ -36,6 +43,19 @@ DB_PATH = xconfig.DB_PATH
 LOG_DIR = xconfig.LOG_DIR
 SECRET_TOKEN = xconfig.SECRET_TOKEN
 MAX_BODY = xconfig.MAX_BODY
+
+
+def _say(msg):
+    """启动信息同时写控制台与日志文件（打包版无控制台时日志是唯一排查线索）。"""
+    try:
+        print(msg)
+    except Exception:
+        pass
+    try:
+        xconfig._log.info(msg)
+    except Exception:
+        pass
+
 
 app = FastAPI(title="文件索引与管理工具")
 
@@ -85,7 +105,8 @@ def index():
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    # app 字段供单实例探测（xray.config._server_alive）识别“本程序”而非其它占用端口的服务
+    return {"status": "ok", "app": "file-xray"}
 
 
 if __name__ == "__main__":
@@ -95,7 +116,7 @@ if __name__ == "__main__":
     # 单实例：若已有实例在运行，直接打开浏览器并退出，避免端口冲突崩溃
     existing = xconfig._read_running_url()
     if existing and xconfig._server_alive(existing):
-        print(f"检测到已在运行的服务：{existing}，直接打开浏览器。")
+        _say(f"检测到已在运行的服务：{existing}，直接打开浏览器。")
         try:
             webbrowser.open(existing)
         except Exception:
@@ -103,9 +124,9 @@ if __name__ == "__main__":
         sys.exit(0)
     xconfig._write_lock(url)
     atexit.register(xconfig._remove_lock)
-    print(f"文件索引工具已启动: {url}")
-    print(f"数据库位置（{DB_WHERE}）: {DB_PATH}")
-    print(f"日志位置: {os.path.join(LOG_DIR, 'xray.log')}")
+    _say(f"文件索引工具已启动: {url}")
+    _say(f"数据库位置（{DB_WHERE}）: {DB_PATH}")
+    _say(f"日志位置: {os.path.join(LOG_DIR, 'xray.log')}")
     # 启动后自动打开浏览器（打包成 exe 时更友好；无桌面环境静默忽略）
     def _open():
         try:
@@ -118,8 +139,8 @@ if __name__ == "__main__":
     except OSError as _e:
         # 极端情况下端口仍被占用（如被其它无关程序占住 8000）：提示而非静默崩溃
         if "10048" in str(_e) or "address already in use" in str(_e).lower():
-            print(f"端口 {PORT} 已被占用，无法启动。请先关闭占用该端口的程序，"
-                  f"或设置环境变量 FIT_PORT 指定其它端口。")
+            _say(f"端口 {PORT} 已被占用，无法启动。请先关闭占用该端口的程序，"
+                 f"或设置环境变量 FIT_PORT 指定其它端口。")
         else:
             raise
     finally:

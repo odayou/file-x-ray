@@ -1,10 +1,16 @@
-# 跨平台打包：在 Windows / macOS / Linux 上用 PyInstaller 构建免安装可执行文件。
-# - 推送到 tag（如 v1.2.3）时，自动创建 GitHub Release 并上传三个平台的产物。
-# - 普通 push 到 main 也会构建，产物作为 Actions Artifact 保留 7 天，方便自测。
+# 跨平台构建与发布：onedir 仅作构建中间产物，Release 只发布各平台安装包。
+#   Windows → Inno Setup 安装包 .exe（file-xray-<ver>-windows-x64-setup.exe）
+#   macOS   → .app（ad-hoc 签名，未公证）→ .dmg（file-xray-<ver>-macos-<arch>.dmg）
+#   Linux   → tar.gz（保留可执行位）（file-xray-<ver>-linux-x64.tar.gz）
+# - 推送到 tag（如 v1.2.3）：三平台全部构建成功后，先创建 draft Release 再转正发布。
+# - push 到 main / 手动触发：只构建并上传 Actions Artifact（保留 7 天），不发布。
+#
+# 版本号单一来源：tag（去掉前缀 v）；非 tag 构建固定为 0.0.0-dev。
+# 版本号通过 FIT_VERSION 注入 PyInstaller 版本资源，并通过 /DMyAppVersion 注入 Inno Setup。
 #
 # 说明：本工具采用“方案 B”——不把 OCR 引擎打进包，终端用户按界面引导自行安装
-# Tesseract / Umi-OCR 即可。CI 只负责把 Python 程序打包成各平台可执行文件。
-name: Build (win/mac/linux)
+# Tesseract / Umi-OCR 即可。CI 只负责把程序打成各平台安装包。
+name: Build & Release (win/mac/linux)
 
 # 发布 Release 需要 contents: write（GitHub 默认只给只读 token）
 permissions:
@@ -37,52 +43,126 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install UPX (for smaller binaries)
-        if: runner.os != 'Windows'
+      - name: Compute version
+        id: ver
+        shell: bash
         run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update && sudo apt-get install -y upx; fi
-          if [ "$RUNNER_OS" = "macOS" ]; then brew install upx; fi
-        shell: bash
-      - name: Install UPX (Windows)
-        if: runner.os == 'Windows'
-        run: choco install upx -y
-        shell: bash
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.0.0-dev"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "FIT_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "构建版本：$VERSION"
 
       - name: Install dependencies
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
-        shell: bash
 
-      - name: Build with PyInstaller
+      - name: Build onedir with PyInstaller
+        shell: bash
         run: pyinstaller build.spec --noconfirm
-        shell: bash
 
-      # 规范化产物名：Windows 自带 .exe；mac/linux 无后缀且原名相同，
-      # 直接发布会重名冲突，统一改名为 file-xray-<平台>
-      - name: Normalize binary name
+      # ---------------- Windows：Inno Setup 安装包 ----------------
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw "ISCC.exe not found (Inno Setup install failed)" }
+          Write-Host "ISCC: $iscc"
+          if (-not (Test-Path "dist\文件索引工具\文件索引工具.exe")) {
+            throw "onedir output missing: dist\文件索引工具\文件索引工具.exe"
+          }
+          & $iscc "/DMyAppVersion=${{ steps.ver.outputs.version }}" "installer\file-xray.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+          $setup = Get-ChildItem "dist\installer\*.exe" -ErrorAction SilentlyContinue
+          if (-not $setup) { throw "installer output missing: dist\installer\*.exe" }
+          Write-Host "Built: $($setup.FullName)"
+
+      # ---------------- macOS：ad-hoc 签名 + dmg ----------------
+      - name: Build macOS dmg (ad-hoc signed, not notarized)
+        if: runner.os == 'macOS'
         shell: bash
         run: |
-          if [ -f "dist/文件索引工具.exe" ]; then
-            cp "dist/文件索引工具.exe" "dist/${{ matrix.artifact }}.exe"
-          else
-            cp "dist/文件索引工具" "dist/${{ matrix.artifact }}"
-            chmod +x "dist/${{ matrix.artifact }}"
+          APP="dist/文件索引工具.app"
+          if [ ! -d "$APP" ]; then
+            echo "BUNDLE output missing: $APP" >&2
+            ls -la dist
+            exit 1
           fi
+          # 先做 ad-hoc 签名，保证本机可直接运行；未做 Apple 公证（notarization）
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+          ARCH="$(uname -m)"
+          hdiutil create -volname "文件索引工具" -srcfolder "$APP" -ov -format UDZO \
+            "dist/file-xray-${FIT_VERSION}-macos-${ARCH}.dmg"
 
-      - name: Upload Artifact
+      # ---------------- Linux：tar.gz（保留可执行位） ----------------
+      - name: Build Linux tarball
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          if [ ! -d "dist/文件索引工具" ]; then
+            echo "onedir output missing: dist/文件索引工具" >&2
+            ls -la dist
+            exit 1
+          fi
+          # -C 放在 -f 之后，保证输出包一定落在 dist/ 而不是 dist/dist/
+          tar -czf "dist/file-xray-${FIT_VERSION}-linux-x64.tar.gz" -C dist "文件索引工具"
+          test -x "dist/文件索引工具/文件索引工具" || {
+            echo "main executable is not executable" >&2; exit 1; }
+
+      # 上传的只有安装包本身，不上传 onedir 目录或裸 exe
+      - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: dist/*
+          path: |
+            dist/installer/*.exe
+            dist/*.dmg
+            dist/*.tar.gz
           if-no-files-found: error
           retention-days: 7
 
-      - name: Publish to Release (on tag)
-        if: startsWith(github.ref, 'refs/tags/')
+  # 三平台 build 全部成功后才运行：先建 draft Release，再转正
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all installers
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List release assets
+        run: ls -la release-assets
+
+      - name: Create draft release with installers
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          draft: true
+          files: release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish (un-draft) release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false

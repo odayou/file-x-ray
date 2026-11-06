@@ -2,7 +2,7 @@
 
 > 项目仓库：https://gitee.com/odayou/file-x-ray
 
-一个跑在你**本机**的工具：索引展示文件，允许你给每个文件加**备注**、**状态**和**主题标签**；对**语音 / 视频可一键转写成文字稿**；对**图片可 OCR 识别文字、对 PDF 可抽取内部文字**；按文件名 / 备注 / 内容 / 标签 / 转写文字 / 图中文字 / 类型全文搜索；快速预览图片·视频·音频·PDF·文本；勾选后**按原目录结构打包**（带走备注、标签、转写稿、OCR 文字与 PDF 正文）；每次搜索可存为**任务清单**并随时重试。
+一个跑在你**本机**的工具：索引展示文件，允许你给每个文件加**备注**、**状态**和**主题标签**；对**语音 / 视频可一键转写成文字稿**；对**图片可 OCR 识别文字、对 PDF 可抽取内部文字、对 docx / xlsx / pptx 可抽取正文**；按文件名 / 备注 / 内容 / 标签 / 转写文字 / 图中文字 / 类型全文搜索；快速预览图片·视频·音频·PDF·文本；勾选后**按原目录结构打包**（带走备注、标签、转写稿、OCR 文字、PDF 正文与 Office 正文）；每次搜索可存为**任务清单**并随时重试。
 
 > 为什么 FastAPI 能操作你的文件？因为后端进程就运行在你的电脑上，拥有完整的系统文件权限；浏览器只负责界面和发请求，真正的扫描 / 读取 / 转写 / OCR / 打开文件夹 / 打包都在本地后端完成。
 
@@ -12,7 +12,8 @@
 
 ```bash
 pip install -r requirements.txt
-# requirements.txt 已含：fastapi uvicorn faster-whisper pymupdf pytesseract pillow
+# requirements.txt 已含：fastapi uvicorn faster-whisper av(18.x) pymupdf pytesseract pillow watchdog
+# 需要与本机验证过的版本完全一致时：pip install -r requirements.lock
 ```
 
 **OCR 引擎（三级优先，扫描件 PDF 开箱即用）**：
@@ -29,7 +30,7 @@ pip install -r requirements.txt
 启动：
 
 ```bash
-cd file-index-tool
+cd file-x-ray
 python backend.py
 ```
 
@@ -43,6 +44,8 @@ python backend.py
 | `FIT_HOST` / `FIT_PORT` | `127.0.0.1` / `8000`                                          | 感知地址与端口                                                                  |
 | `FIT_WHISPER_MODEL`       | `base`                                                          | 转写模型：`tiny`/`base`/`small`/`medium`/`large-v3`（越大越准越慢）   |
 | `FIT_WHISPER_LANG`        | 空（自动检测）                                                    | 固定语种可填 `zh` / `en` 等，提升准确率                                     |
+| `FIT_WHISPER_PROMPT`      | `以下是普通话的句子。`                                          | 转写提示词。中文输出默认由繁体稳定转为**简体**；设 `0`/`false`/`off` 可关闭（英文识别不受影响）。也可换成带领域词的提示（如产品/术语名）进一步提升专有名词准确率 |
+| `FIT_WHISPER_VAD`         | `0`（关闭）                                                      | 内置 VAD 切掉静音段。实测短音频/干净音频无明显收益，长录音含大段静音时略好，按需开启 |
 | `FIT_TRANSCRIBE_MAX_MB`   | `300`                                                           | 超过此大小的音视频文件跳过转写，避免卡死                                        |
 | `FIT_OCR_ENGINE`          | `auto`                                                          | OCR 引擎：`auto`（优先 Umi-OCR，失败回退 tesseract）/ `umi` / `tesseract` |
 | `FIT_UMI_OCR_URL`         | `http://127.0.0.1:1224`                                         | Umi-OCR 的 HTTP 接口地址                                                        |
@@ -51,13 +54,101 @@ python backend.py
 | `FIT_OCR_PDF`            | `1`（开启）                                                      | 扫描结束后自动在**后台**对无文字层的扫描件 PDF 逐个 OCR（不拖慢扫描）；设 `0` 关闭 |
 | `FIT_PDF_OCR_PAGES`      | `200`                                                            | 单个 PDF 的 OCR 页数上限（防超大扫描件拖死任务），`0` 不限制                      |
 | `PDF_TEXT_LIMIT`          | `200000`                                                        | 单个 PDF 抽取文字上限（字符）                                                   |
+| `FIT_FTS`                 | `1`（开启）                                                      | 全文索引（FTS5 + trigram）；设 `0` 完全回退到原来的 LIKE 检索                    |
+| `FIT_LOG_LEVEL`           | `INFO`                                                          | 日志级别；逐文件失败记 `DEBUG`，扫描级失败记 `ERROR`                             |
+| `FIT_MAX_BODY_MB`         | `25`                                                            | 写接口请求体上限（MB）                                                          |
+| `FIT_UMI_OCR_PATH`        | 空（按常见路径探测）                                              | Umi-OCR 可执行文件路径（未运行时按需自动拉起）                                   |
+| `FIT_UMI_OCR_AUTOSTART`   | `1`（开启）                                                      | 是否允许自动拉起 Umi-OCR；设 `0` 关闭                                            |
+
+配置文件（可选）：与数据库同目录的 `config.json`，键名与上表对应（如 `{"ocr_engine": "umi", "whisper_model": "small", "log_level": "DEBUG", "excludes": ["**/node_modules/**"]}`）。
+**优先级：环境变量 > config.json > 代码默认值**。转写 / OCR / 扫描相关项在工具栏「⚙ 设置」面板保存后由**下一个任务**采用；日志级别、FTS 开关、请求体上限等启动期项需重启服务（见下节「设置面板」）。
+
+> 转写默认输出**简体中文**：实现方式是给 Whisper 一段简体中文提示词（`FIT_WHISPER_PROMPT`），零额外依赖、无需后处理；英文识别不受影响（实测相似度不降反升）。模型档位方面，`base` 已满足日常；中文噪声音频下 `small` 识别率明显更高（耗时约 2 倍、内存约 700MB），可在「⚙ 设置」面板里把「转写模型」调成 `small`。
+
+## 设置面板（⚙ 设置）
+
+工具栏「更多 ⋯」→「⚙ 设置」提供可视化配置，普通用户无需手改 `config.json` 或环境变量。面板会显示每一项的**当前生效值、默认值与来源**（`默认值` / `配置文件` / `环境变量（只读）`），保存后写回与数据库同目录的 `config.json`（保留其它未管理字段，不会整文件覆盖）。
+
+| 分组 | 设置项（config.json 键） | 默认值 | 生效时机 |
+| --- | --- | --- | --- |
+| 转写 | `whisper_model` 转写模型 | `base` | 下次转写生效（切换档位时自动重载模型） |
+| 转写 | `whisper_prompt` 全局默认提示词 | `以下是普通话的句子。` | 下次转写生效（可被单次任务覆盖；留空或 `off` 关闭） |
+| 转写 | `whisper_vad` VAD 静音切分 | 关闭 | 下次转写生效 |
+| 转写 | `whisper_lang` 识别语种 | 自动检测 | 下次转写生效 |
+| OCR | `ocr_engine` 识别引擎 | `auto` | 下次识别/扫描生效 |
+| OCR | `ocr_langs` tesseract 语言 | `chi_sim+eng` | 下次识别生效 |
+| OCR | `ocr_max_mb` 图片大小上限 | `30` | 下次识别生效 |
+| OCR | `ocr_pdf_enabled` 自动识别扫描件 PDF | 开启 | 下次扫描生效 |
+| OCR | `pdf_ocr_max_pages` 单 PDF 页数上限 | `200`（0=不限） | 下次识别生效 |
+| OCR | `umi_ocr_autostart` 自动拉起 Umi-OCR | 开启 | 下次识别生效 |
+| OCR | `umi_ocr_url` / `umi_ocr_path` Umi-OCR 地址/路径 | `http://127.0.0.1:1224` / 空 | 下次识别生效 |
+| 系统 | `log_level` 日志级别 | `INFO` | **需重启服务生效** |
+| 系统 | `fts_enabled` 全文索引 | 开启 | **需重启服务生效** |
+| 系统 | `max_body_mb` 请求体上限 | `25` | **需重启服务生效** |
+
+模型档位旁注了实测代价（`base` 139MB 磁盘 / 319MB 内存为基准；`small` 461MB / 740MB / 约 2.4x；`medium` 1457MB / 1.76GB / 约 6.9x），噪声音频建议 `small`。
+
+**关于环境变量（最常见的坑）**：环境变量优先级最高。若某个键被环境变量锁定，面板会把该控件置灰并提示「该值由环境变量 `FIT_XXX` 控制，界面修改不会生效」。此时即使通过接口写入，也只会写进 `config.json`，实际运行仍用环境变量的值（保存后的提示会明确说明）。要让界面设置生效，请先移除对应环境变量再重启服务。
+
+**接口**：`GET /api/settings` 返回 `settings`（每项含 `key/label/type/value/default/source/locked/effect_text/help/options`）与 `config_file`；`POST /api/settings` 接收 `{"values": {键: 值}}`，仅允许上表键，未知键或非法枚举/越界数值返回 `400`，环境变量覆盖的键会在响应 `messages` 中说明。两个接口沿用现有 token 校验与请求体上限。
+
+
+## 逐次提示词（每个录音单独指定）
+
+不同录音的领域和术语差异很大，全局提示词往往只适合其中一部分。转写入口现在支持**逐次提示词**：每次提交都能改，批量时一次输入应用于本批。
+
+### 优先级（从高到低）
+
+1. **本次任务输入框**：详情页音频/视频下方的「🎯 本次提示词」，或批量「🎙 转写选中」弹窗里填的内容。填了就用它，并写回该文件。
+2. **该文件上次使用的提示词**（`files.prompt`）：接口省略 `prompt` 时自动沿用；刷新页面/复转时输入框也会自动带出，可见可改。这样复转不必重填。
+3. **全局默认 `whisper_prompt`**（默认 `以下是普通话的句子。`）：前两者都没有时使用。
+
+接口层面的三种写法要区分：
+
+| `prompt` 传参 | 行为 |
+| --- | --- |
+| 省略不传 | 该文件上次 → 全局默认（向后兼容旧调用） |
+| `""`（空串） | 跳过文件上次，直接用全局默认（界面里“清空输入框”就是这种） |
+| `"off"`（也接受 `0/false/no/none/关闭`） | 本次完全不注入提示词，并把 `off` 写回文件 |
+
+> 选“沿用文件上次”而不是“每次重新用全局”：同一段录音通常反复校对/重转，沿用能减少重复输入，且输入框会明确显示当前值，不会悄悄生效。想回到全局默认，清空输入框即可。
+
+### 持久化与迁移
+
+`files` 表新增 `prompt TEXT DEFAULT ''` 列。启动时用 `PRAGMA table_info(files)` 检测，缺失才 `ALTER TABLE`，旧库数据完全不动；改名/移动的指纹迁移会整行搬走，提示词跟着文件走。详情接口 `GET /api/file/<id>` 新增 `prompt` 字段（空=未覆盖，`off`=已关闭）。
+
+### 长度限制（实测）
+
+- 服务端硬上限 **500 字符**，超长直接 `400`（不静默截断）；非字符串也 `400`。
+- Whisper 的提示预算约 **223 token**（faster-whisper 中 `max_length//2 - 1`）。实测把 651 token 的长提示交给 `WhisperModel.get_prompt`，输出只保留 **223 个提示 token**（外加 `sot_prev/sot/lang/task`），且保留的是**末尾**，开头的词被丢弃。因此中文约 200 字就会触顶，建议控制在 **100 字以内**，并把最关键的术语放在**靠后**位置。
+- 界面输入框旁实时显示“已填 N / 500 字”，并注明“Whisper 预算约 224 token，超出从开头截断”。
+
+### 什么场景值得用（实测依据）
+
+- **术语/人名多**：中文夹具含 “File X-Ray / Elasticsearch / 主分片 / 聚合 / 张伟”，默认提示整体相似度 0.96，但 `File X-Ray`（听成 File X, Ray）、`Elasticsearch`（elastic search）、`张伟`（张维）均错；定制提示后五个词全部命中，相似度 0.98。
+- **英文**：默认中文提示不会把英文带偏（相似度 0.989，仅 `Elasticsearch` 被拆成 Elastic search）；英文定制提示相似度 1.0，`Elasticsearch`、`Zhang Wei` 均正确。
+- **组合 `whisper_lang`**：固定 `zh` 与自动检测在中文夹具上输出一致；英文夹具固定 `en` 与自动检测也一致，说明提示词与语种设置可独立组合。
+
+### 什么场景别用（双刃剑）
+
+- **别堆砌重复词**。实测把 “索引 / 查询” 写进提示后，模型会把它们“顺”进输出并陷入重复：一段约 11 秒的音频被输出成 “索引文件 聚合 查询 索引文件 聚合 查询……” 的长串（聚合重复 7 次，相似度跌到 0.537）。缩短为不重复的 35 字术语后，重复消失、相似度回到 0.98。
+- **别完全关闭提示词（`off`）**：实测关闭后中文重新变成繁体（`我們 / 來 / 查詢 / 重點 / 聯繫 / 張偉`，相似度 0.80），默认提示输出简体（同一段音频浏览器实测为“文件所引工具支持全文搜索和图片识别……”）。如果确实要关闭自定义内容，建议保留一行 `以下是普通话的句子。` 作为最小简体锚点。
+- 提示里的词可能被模型硬塞进结果，**不要填与音频无关的内容**。
+
+### 入口与接口
+
+- 详情页音频/视频块内直接可编辑「🎯 本次提示词」，并显示“本文件已保存 / 未单独保存”状态；下方「🎙 转写此文件」按当前输入提交。
+- 批量：勾选后点「🎙 转写选中」，弹窗输入一次即可应用于本批；留空 = 各文件沿用各自上次/全局（逐文件解析），不会强制覆盖。
+- 弹窗提供「最近使用」下拉（最近 8 条，存于现有 `app_meta` 表，不引入新依赖）。
+- `POST /api/transcribe` 新增可选 `prompt`；`GET /api/transcribe/prompts` 返回 `global_prompt/recent/max_len/off_token/budget_tokens`。
+
 
 ## 界面与功能
 
 ```
 顶栏   [📁 文件索引与管理] + 项目切换 + [📁 管理项目] + 统计 + 「OCR 状态」常驻徽标（已启用/未启用，未启用可点击查看安装引导）
 工具栏 项目切换器 + [📁 管理项目] ｜ 搜索框 + 状态过滤 + 类型过滤 + 当前位置 + 标签筛选
-       + [👻 显示已失效] + [👁 实时感知] + [⚙ 管理状态] + [📋 任务清单]
+       + [👻 显示已失效] + [👁 实时感知] + [⚙ 管理状态] + [🚫 排除规则] + [⚙ 设置] + [📋 任务清单]
        + 已选/[转写选中]/[识别选中图片]/[导出选中]
 左栏   文件夹树（可按显示层级折叠）｜ 主题标签云（点击即按标签筛选）
 中栏   文件清单（全选本页、逐条勾选、状态徽标、备注/标签摘要、分页）
@@ -65,6 +156,7 @@ python backend.py
          · 音频/视频：🎙 转写此文件（生成可搜索文字稿）
          · 图片：🖼 识别图中文字（OCR，支持中文，需装引擎）
          · PDF：有文字层自动抽取；扫描件/无文字层在扫描时自动 OCR（需装引擎，可手动重识别）
+         · docx / xlsx / pptx：扫描时自动抽取正文，详情/校对页可查看与修改
          + 打开所在文件夹 + 加入/移出选择
 ```
 
@@ -81,12 +173,24 @@ python backend.py
 | **语音 / 视频转写**                  | 右栏「🎙 转写此文件」或工具栏「🎙 转写选中」；基于 faster-whisper                                                                                          |
 | **图片 OCR 文字识别**                | 右栏「🖼 识别图中文字」或工具栏「🖼 识别选中图片」；Umi-OCR 优先、tesseract 兜底                                                                           |
 | **PDF 文字提取**                     | 有文字层自动抽取；扫描件/无文字层在 OCR 引擎可用时**扫描阶段自动 OCR** 写入索引，右栏可查看/复制/重识别，可被搜索；未装引擎时详情页与顶栏徽标给出安装引导 |
-| 按文字/标签/转写/图中文字搜索              | 同时匹配 `name / note / content / tags / transcript / ext`，可叠加状态、类型、目录、标签过滤                                                             |
+| **Office 正文提取（新）**            | `.docx` / `.xlsx` / `.pptx` 扫描时用标准库 `zipfile` + XML 解析并写入 `content`，详情页可查看、可校对修改，可被正文搜索；列表显示“已抽取 N 字”与截断标记 |
+| 按文字/标签/转写/图中文字搜索              | 同时匹配 `name / note / content / tags / transcript / ext`，可叠加状态、类型、目录、标签过滤；结果行高亮命中词并展开正文片段，可一键定位到具体位置（见下节） |
 | 快速预览                                   | 图片/视频/音频用原生播放器，PDF 内嵌阅读器，文本直接显示正文                                                                                               |
 | 打开所在文件夹                             | 后端调系统命令：Windows `explorer /select,"路径"`、macOS `open -R`、Linux `xdg-open`                                                                 |
 | 全选/勾选 → 按原结构打包 + 带走全部元数据 | 导出 zip 保留 `rel_path` 目录树；根目录附 `manifest.json/csv`（含备注/标签/转写稿/OCR 文字/PDF 正文）；可选为每个文件生成 `.文件名.note.json` 副文件 |
 | 搜索任务清单 + 重试                        | 每次搜索自动入库为任务，右侧面板可看结果数、一键重试或应用（含所属项目）                                                                                   |
 | **项目：文件的自由组合**             | 项目只记录一组根目录，成员实时匹配，新建/改名/改目录即时生效；文件实体唯一，元数据跨项目复用                                                               |
+
+## 搜索命中定位（高亮 / 片段 / 多处导航）
+
+搜索不只告诉你“哪些文件命中”，还会标出“命中了哪里”：
+
+- **结果列表**：文件名命中时高亮查询词；正文 / PDF 文字 / OCR / 转写 / 备注命中时，在列表行下方直接展开上下文片段（命中词前后各 60 字）。每行显示命中总数（如「共 12 处」），默认展示前 3 个**不同位置**的片段，点「展开其余 N 处」可看到最多 20 处。
+- **详情页**：从搜索结果进入时自动带上查询词，对 `content`（普通文本）、`pdf_text`（PDF 文字层）、`transcript`（图片 OCR / 音视频转写）中的**全部命中处**高亮，并提供「第 x / 共 N 处」与「上一处 / 下一处」（走到头会回到起点）。进入时自动滚到第一处；**点列表里的第 N 个片段进入，会直接定位到第 N 处**，而不是从头开始。
+- **查询词解析**：与后端 `_build_where` 的实际匹配逻辑保持一致 —— 整个搜索串作为一个**字面短语**（FTS5 `"..."` 短语 / LIKE `%整串%`），不额外按空格分词；因此高亮词就是实际参与匹配的那一串，避免“标了却没命中”。
+- **性能保护**：片段在**服务端**生成，只回传上下文片段，绝不把 20 万字的正文整段发到前端；详情页最多高亮前 200 处，超出提示「命中过多，已显示前 200 处」；命中计数单字段最多统计 2000 处，超出显示为 `N+`。
+- **安全**：服务端片段使用控制字符 `\u0001` / `\u0002` 作定界符，前端**先整体 HTML 转义、再替换为 `<mark>`**，正文里的 `<script>` 只作为文本显示，不会执行。
+- **FTS 说明**：实测 FTS5 的 `snippet()` / `highlight()` 在 trigram 分词下可用，但 `snippet()` 每列只返回一个片段窗口（相邻多处命中会挤在同一段），`highlight()` 返回整列文本；为满足“多处不同位置片段 + 精确命中计数 + LIKE 短词路径一致”，采用服务端手动定位命中位置。接口新增的 `terms` / `items[].hits` 字段均为附加字段，旧前端忽略即可。
 
 ## 项目：文件的自由组合
 
@@ -131,6 +235,18 @@ python backend.py
 | 只想盯某个子目录        | 新建项目指向该子目录即可，已索引的文件立刻可见，无需重扫    |
 | 临时归集一批文件来处理  | 建项目 → 处理 → 删项目；文件与标注不受影响                |
 
+## 排除规则（跳过 .git / node_modules 等目录）
+
+扫描时如果不想把 `.git`、`node_modules`、构建产物之类的目录收进索引，在工具栏点「🚫 排除规则」：
+
+- **新增**：填一条规则即可，例如 `**/node_modules/**`、`**/.git/**`、`D:/项目/临时/**`。
+  - 含 `*` / `?` 时按 glob 匹配整条路径（`**` 可跨目录，`*` 只匹配单层），大小写不敏感；
+  - 不含通配符时按「路径包含」匹配，例如 `node_modules` 会跳过所有包含该片段的路径。
+- **删除**：在列表里点「删」，规则立即失效。
+- 规则保存在数据库 `app_excludes` 表，扫描与实时感知都按同一份规则跳过；改完下次扫描即生效。
+- **未添加任何规则时行为与之前完全一致**（零影响）。
+- 「清理存量索引」会把**已入库但命中规则**的记录从索引删除（源文件不动），操作前有两次确认弹窗；后端还要求请求体显式带 `confirm=true`，脚本误调也会被拒绝。
+
 ## 图片 OCR 与 PDF 文字提取
 
 ### 图片 OCR（图中文字 → 可搜索）
@@ -140,6 +256,13 @@ python backend.py
 - **tesseract 兜底**：需系统安装 tesseract 及 `chi_sim`（中文）语言包（见上方安装说明）。
 - **触发**：右栏选中图片点「🖼 识别图中文字」，或勾选多个后点工具栏「🖼 识别选中图片」批量识别；非图片自动跳过。
 - 识别结果写入索引中的 `transcript` 字段，之后按图中文字即可搜到该图片；导出时一并带走。
+
+### 音视频转写依赖说明
+
+- **依赖组合**：`faster-whisper 1.2.x` + `PyAV (av) 18.x` + `ctranslate2`。`requirements.txt` 已把 `av` 锁在 `>=18.1,<19`、`faster-whisper` 锁在 `>=1.2.1,<1.3`。
+- **为什么锁 `av<19`**：PyAV 19 移除了 `av.open()` 的 `metadata_errors` 参数，而 faster-whisper 1.2.1 仍在传该参数，运行时会直接抛 `TypeError`，导致所有音频/视频转写不可用。上游修复目前只进了 master，尚未发布正式版本，因此先把 `av` 钉在 18.x。
+- **何时可以解除**：等 faster-whisper 1.2.2 正式发布（内部按 `av` 主版本条件传参）后，可移除 `av<19` 上限并同步升级。
+- **首次加载延迟**：第一次转写时需加载模型并做 `int8` 量化转换，`base` 模型大约 22 秒（之后模型与转换结果缓存在 HuggingFace 缓存目录，再次使用明显更快）。界面会显示「加载模型（首次使用需下载）」阶段，属预期行为。
 
 ### 识别结果先暂存、再确认
 
@@ -163,37 +286,123 @@ OCR 与转写都遵循同一条规则：**已有旧内容时，新结果绝不�
 - **文字来源标记**：右栏 PDF 文字会标注来源——`文字层精确抽取` / `OCR 识别（建议校对）` / `人工校对`；OCR 结果附「🔍 对照原文校对」一键进入校对模式（左侧原文右侧文字并排修改）。
 - **没有装 OCR 引擎时**：不会报错，只是扫描件 PDF 抽不到文字；此时右栏会显示黄色安装引导，顶栏的「OCR ✕ 未启用」徽标也可点击查看按系统（Windows / macOS / Linux）对应的安装步骤。
 
-## 打包成 Windows 免安装 exe（双击即用）
+## Office 文档正文提取（docx / xlsx / pptx）
 
-本仓库已内置 PyInstaller 配置，在 **Windows** 上执行：
+| 格式 | 抽取方式 | 输出结构 | 说明 |
+|---|---|---|---|
+| `.docx` | `word/document.xml` 中的 `<w:t>` | 按 `<w:p>` 段落保留换行，表格单元格文字一并收集 | 不含页眉页脚；旧版 `.doc` 不支持 |
+| `.pptx` | `ppt/slides/slideN.xml` 的 `<a:t>` | 按幻灯片顺序分组，输出「第 N 页」；有备注页时附「【备注】」 | 旧版 `.ppt` 不支持 |
+| `.xlsx` | `xl/sharedStrings.xml` + `xl/worksheets/sheetN.xml` | 按工作表分组，标出「【工作表：名称】」；单元格以制表符分隔、行以换行分隔 | 只取**缓存值/显示值**（含公式单元格的 `<v>`），**不计算公式**；日期等数字按缓存数值原样输出 |
+
+实现只依赖 Python 标准库 `zipfile` + `xml.etree.ElementTree`，不引入 python-docx / openpyxl / pandas。
+
+**截断与体积防御**（常量见 `xray/config.py`）：
+
+- 正文总上限 `OFFICE_TEXT_LIMIT = 200000` 字符，超出写入数据库中 `content_truncated=1`，列表与详情会显示「已截断」。
+- 单个工作表最多 `XLSX_MAX_ROWS_PER_SHEET = 5000` 行；多个工作表累计超过总字符上限也会截断。
+- 压缩包本体超过 `OFFICE_MAX_BYTES = 50MB`、单个 ZIP 成员解压后超过 `OFFICE_MAX_ENTRY_BYTES = 200MB` 时跳过抽取（记录 skipped），避免 ZIP 炸弹拖死扫描。
+- 损坏 / 加密 / XML 异常的 Office 文件按既有扫描错误通道记录 error 并继续扫描，**不会中断整次扫描，也不会冲掉该文件此前的正文**（移动 / 改名同理）。
+
+**支持范围**：`.docx`、`.xlsx`、`.pptx` 三种 Office Open XML 格式。**老格式 `.doc` / `.xls` / `.ppt` 暂不支持**（二进制 OLE 结构，按普通文件入库，不抽取正文）；`.odt` / `.ods` / `.odp` 同样暂不抽取。
+
+## 下载与安装（Release 资产）
+
+每次打 tag（如 `v1.2.3`）会由 CI 构建三平台安装包；**Release 只提供安装包本身，不发布 onedir 目录或裸 exe**。资产名统一带版本号：
+
+| 平台 | 资产 | 使用方式 |
+|---|---|---|
+| Windows x64 | `file-xray-<版本>-windows-x64-setup.exe` | 双击安装（按用户安装、不弹 UAC），从桌面/开始菜单启动 |
+| macOS（架构见文件名） | `file-xray-<版本>-macos-<arch>.dmg` | 打开 dmg，把 App 拖进「应用程序」后运行；**未公证**，首次打开需在 App 上右键 →「打开」，或执行 `xattr -dr com.apple.quarantine "/Applications/文件索引工具.app"` |
+| Linux x64 | `file-xray-<版本>-linux-x64.tar.gz` | `tar -xzf file-xray-<版本>-linux-x64.tar.gz` 后执行 `./文件索引工具/文件索引工具`（压缩包保留可执行位） |
+
+> **macOS 签名状态（准确表述）**：CI 只做 **ad-hoc 签名**（`codesign --force --deep --sign -`），保证在本机可运行；**没有做 Apple 公证（notarization）**，也没有 Developer ID 证书。因此 Gatekeeper 会提示"无法验证开发者"，需要用户右键打开或手动移除隔离属性。这不是签名失败，而是未公证的预期表现。
+
+## 本地打包各平台安装包
+
+PyInstaller 不支持交叉编译：每个平台只能在自己的系统上打包。onedir 只是中间产物，安装包才是交付物。
+
+**Windows**（需安装 [Inno Setup 6](https://jrsoftware.org/isdl.php)；`winget install JRSoftware.InnoSetup` 装到用户目录即可，无需管理员）：
 
 ```bat
-pip install pyinstaller
-pyinstaller build.spec 或 python -m PyInstaller build.spec
+pip install -r requirements.txt pyinstaller
+set FIT_VERSION=1.2.3
+pyinstaller build.spec --noconfirm
+:: ISCC 位置二选一（按你的安装方式）：
+::   用户安装（winget）：%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe
+::   全局安装：          C:\Program Files (x86)\Inno Setup 6\ISCC.exe
+"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" /DMyAppVersion=1.2.3 installer\file-xray.iss
+:: 产物：dist\installer\file-xray-1.2.3-windows-x64-setup.exe
 ```
 
-生成的 `dist\文件索引工具.exe` 双击即可运行——它会自动启动服务并打开浏览器。数据库默认放在用户目录 `~/file_index_data/file_index.db`，不会因程序目录只读而报错。
+- `FIT_VERSION` 与 `/DMyAppVersion` 要填同一个版本号：前者决定 exe 版本资源，后者决定安装包文件名与版本资源，不一致会出现“程序 1.2.3 / 安装包 1.0.0”的错位。
+- `installer\ChineseSimplified.isl` 是随仓库附带的官方简体中文语言文件：Inno Setup 6.7.x 发行包不再内置它（实测 6.7.3 的 `Languages` 目录里没有），因此不能依赖 `compiler:Languages\ChineseSimplified.isl`，本地与 CI 都用仓库内这份。
 
-> 说明：PyInstaller 不支持跨平台编译，需在与目标系统相同的系统上打包（在 Windows 上打 Windows 包）。本沙箱为 Linux，无法直接产出 exe，故只提供配置与步骤。
+**macOS**：
+
+```bash
+pip install -r requirements.txt pyinstaller
+pyinstaller build.spec --noconfirm            # 产出 dist/文件索引工具.app
+codesign --force --deep --sign - "dist/文件索引工具.app"
+hdiutil create -volname "文件索引工具" -srcfolder "dist/文件索引工具.app" \
+  -ov -format UDZO "dist/file-xray-1.0.0-macos-$(uname -m).dmg"
+```
+
+**Linux**：
+
+```bash
+pip install -r requirements.txt pyinstaller
+pyinstaller build.spec --noconfirm            # 产出 dist/文件索引工具/
+tar -czf "dist/file-xray-1.0.0-linux-x64.tar.gz" -C dist "文件索引工具"
+```
+
+- **版本号**：CI 由 tag 推导并注入（`FIT_VERSION` → exe 版本资源，`/DMyAppVersion` → 安装包文件名与版本资源）；本地不注入时使用 `assets/version_info.txt` 的 `1.0.0.0` 与 `.iss` 的默认 `1.0.0`，升级版本时两处需同步。安装包的 `ProductVersion` / `FileVersion` 由 `.iss` 里的 `VersionInfoVersion` 写入（tag 带 `-rc1` 这类后缀时只取数字段）。
+- **控制台**：默认窗口模式（无黑色命令行窗口）。排查启动问题可 `set FIT_CONSOLE=1` 后重新打包。
+- **数据位置**：数据库默认 `~/file_index_data/file_index.db`，日志在同目录 `logs/`（可用 `FIT_DB` 覆盖，日志跟着数据库走）。
+- **尚未做**：Apple 公证（需 Developer ID 证书 + `notarytool` + `stapler`）、Linux AppImage / deb（当前以 tar.gz 为交付）。
+
+
+## 日志与数据库（WAL）
+
+- **日志**：`logs\xray.log`（与数据库同目录；源码运行为项目根目录，打包版为用户数据目录）。滚动切分：单文件 10MB、保留 5 份；级别用 `FIT_LOG_LEVEL` 调整。逐文件失败只记 `DEBUG`（默认不落盘，避免刷屏），扫描级失败记 `ERROR`。
+- **数据库**：SQLite（WAL 模式）。运行中除主库外还会有 `file_index.db-wal`、`file_index.db-shm` 两个伴随文件，这是正常的，不是垃圾文件。
+  - **不要只删主库**：先退出程序，再把 `file_index.db` 与 `-wal` / `-shm` 一起删除；只删主库可能留下不一致状态。
+  - 全库删除后重新扫描即可重建索引（文件的备注/状态/标签也会一并丢失，删前请确认）。
+
 
 ## 已知范围与扩展建议
 
 - **图片 OCR / 语音视频转写是按需触发**；扫描件 PDF 的 OCR 在**扫描结束后自动后台执行**（不拖慢扫描，前提是本机已安装 OCR 引擎，见上方安装说明）。
+- **Office 正文在扫描时自动抽取**（无需额外引擎）；只支持 `.docx/.xlsx/.pptx`，老格式 `.doc/.xls/.ppt` 暂不支持。
 - **OCR 引擎需本机自装**：默认不内置，按界面顶栏「OCR 状态」徽标或详情页引导，在 Windows 装 Umi-OCR / Tesseract、macOS `brew install tesseract tesseract-lang`、Linux `apt install tesseract-ocr tesseract-ocr-chi-sim` 即可，安装后刷新页面生效。
-- 单个文件内容索引上限 20 万字符、大于 5MB 的文本文件不索引内容（可在 `backend.py` 调整 `CONTENT_INDEX_LIMIT` / `FILE_READ_LIMIT`）。
+- 单个文件内容索引上限 20 万字符、大于 5MB 的文本文件不索引内容（默认值在 `xray/config.py` 的 `CONTENT_INDEX_LIMIT` / `FILE_READ_LIMIT`）。
+- Office 正文同样受 20 万字符上限约束；xlsx 另有单表 5000 行上限，超出会标记 `content_truncated`。支持 `.docx/.xlsx/.pptx`，**老格式 `.doc/.xls/.ppt` 暂不支持**。
 - 搜索结果列表单次最多返回 500 条用于展示，统计数字是全量匹配数。
-- 数据库为单个 SQLite 文件，可随时删除后重新扫描。
+- 数据库与日志的落点、WAL 伴随文件与正确清理方式见「日志与数据库（WAL）」一节。
+- `POST /api/scan`（按根目录直接扫描，并自动归入或新建项目）保留给脚本 / 自动化调用；界面上的扫描统一走项目扫描 `POST /api/projects/{pid}/scan`（带同根目录并发保护与进度浮层）。
 
 ## 文件结构
 
 ```
-file-index-tool/
-├── backend.py        # FastAPI 后端：扫描/搜索/预览/打开文件夹/打包 + 转写(faster-whisper) + OCR(Umi-OCR/tesseract) + PDF 提取
-├── index.html        # 前端单页（内联 CSS/JS，无需构建）
-├── web/              # 前端 JS 模块
+file-x-ray/
+├── backend.py        # FastAPI 装配层：挂载路由与静态资源、安全中间件、启动入口
+├── xray/             # 领域模块（各自持有 APIRouter，共享 xray.config）
+│   ├── config.py     # 环境变量 / config.json、令牌、数据库与建表、日志、排除规则、jobs
+│   ├── scan.py       # 递归扫描 / 增量比对 / 指纹迁移 / 项目扫描 / 进度查询
+│   ├── browse.py     # 文件清单 / 目录树 / 统计 / 标签 / 预览
+│   ├── ocr.py        # 图片 OCR、PDF 文字抽取、扫描件 PDF 补识别
+│   ├── transcribe.py # faster-whisper 语音/视频转写
+│   ├── extractors/   # 抽取器有序注册表：text / pdf / docx / xlsx / pptx（stdlib ZIP+XML）
+│   └── tasks.py      # 导出打包 / 报告 / 状态管理 / 实时感知
+├── index.html        # 前端单页（内联 CSS，无需构建）
+├── web/              # 前端 JS 模块（projects / tools / events …）
 │   └── vendor/tesseract/   # 浏览器内置 OCR：tesseract.js WASM 核心 + 中英文语言包（随包离线可用）
-├── requirements.txt  # Python 依赖
-├── build.spec        # PyInstaller 打包配置（Windows exe）
-├── file_index.db     # 首次运行自动生成（已加入 .gitignore）
+├── requirements.txt  # 人工维护的依赖入口
+├── requirements.lock # 完整锁定版本（含传递依赖）
+├── build.spec        # PyInstaller onedir 配置（macOS 额外产出 .app BUNDLE）
+├── assets/           # app.ico / app.icns / version_info.txt
+├── installer/        # file-xray.iss（Inno Setup 安装包脚本）
+├── .github/workflows/build.yml   # 三平台构建 → 安装包 → Release
+├── file_index.db     # 首次运行自动生成（已 gitignore，另有 -wal / -shm）
 └── README.md
 ```
+

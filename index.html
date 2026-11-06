@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>文件索引与管理</title>
+<link rel="icon" href="data:," />
 <script>window.__FIT_AUTH_TOKEN__ = "FIT_TOKEN_PLACEHOLDER";</script>
 <style>
   :root {
@@ -79,6 +80,36 @@
   .preview img, .preview video, .preview iframe { max-width: 100%; max-height: 360px; }
   .preview .ph { color: #94a3b8; padding: 20px; text-align: center; font-size: 13px; }
   .preview pre { color: #e2e8f0; background: #0f172a; padding: 12px; width: 100%; height: 320px; overflow: auto; font-size: 12px; margin: 0; white-space: pre-wrap; word-break: break-all; }
+  /* 搜索命中高亮：亮色列表与深色正文预览用不同配色，保证都看得清 */
+  mark.hit-mark { background: #ffe08a; color: #7a4a00; border-radius: 2px; padding: 0 1px; }
+  .preview pre mark.hit-mark, .hit-pre mark.hit-mark { background: #fbbf24; color: #111827; }
+  mark.hit-mark.cur { background: #f97316; color: #fff; box-shadow: 0 0 0 2px rgba(249,115,22,.35); }
+  /* 结果列表：命中片段行（默认显示前 3 处，其余点“展开”） */
+  tr.snip-row td { padding: 0 8px 8px 34px; border-bottom: 1px solid var(--border); }
+  .snip-box { background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+  .snip-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; font-size: 12px; }
+  .hit-count { background: #eef2ff; color: #4338ca; border-radius: 8px; padding: 1px 8px; font-weight: 600; }
+  .hit-hint { color: var(--muted); }
+  .snip { display: flex; gap: 6px; padding: 3px 4px; border-radius: 6px; cursor: pointer;
+          line-height: 1.6; font-size: 12px; color: #334155; }
+  .snip:hover { background: #eef2ff; }
+  .snip + .snip { border-top: 1px dashed #e2e8f0; }   /* 片段之间的分隔线 */
+  .snip-no { flex: 0 0 16px; color: var(--muted); text-align: right; }
+  .snip-label { flex: 0 0 auto; background: #f1f5f9; border-radius: 6px; padding: 0 5px;
+                font-size: 11px; color: #64748b; height: 18px; line-height: 18px; }
+  .snip-text { word-break: break-all; }
+  .snip-more { border-top: 1px dashed var(--border); margin-top: 4px; padding-top: 4px; }
+  .snip-toggle { margin-top: 6px; }
+  /* 详情页命中定位块 */
+  .hit-block { border: 1px solid var(--border); background: #f8fafc; border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; }
+  .hit-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+  .hit-title { font-weight: 600; }
+  .hit-q { color: #4338ca; margin-left: 6px; font-weight: 400; }
+  .hit-count-text { color: var(--muted); }
+  .hit-warn { color: #b45309; }
+  .hit-pre { background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 10px;
+             max-height: 320px; overflow: auto; font-size: 12px; margin: 8px 0 0;
+             white-space: pre-wrap; word-break: break-all; }
   .meta-row { display: flex; gap: 6px; font-size: 12px; color: var(--muted); margin: 4px 0; }
   .meta-row b { color: var(--text); font-weight: 500; min-width: 52px; }
   /* 校对模式浮层：覆盖文件清单 + 详情区域 */
@@ -119,7 +150,23 @@
            padding: 10px 18px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; z-index: 200; pointer-events: none; }
   #toast.show { opacity: .95; }
   a.dl { color: var(--primary); }
-  .selbar { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 6px 10px; font-size: 12px; display: flex; gap: 8px; align-items: center; }
+  .selbar { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 2px 2px; font-size: 12px; display: flex; gap: 8px; align-items: center; }
+  /* 「更多 ⋯」收纳菜单：低频维护类按钮集中到这里，外层只留高频主操作 */
+  .more-menu { position: relative; }
+  .more-menu-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
+    min-width: 190px; max-width: calc(100vw - 20px); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px rgba(15,23,42,.18);
+    padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+  .more-menu-panel[hidden] { display: none; }
+  .more-menu-panel .more-item { text-align: left; background: transparent; color: var(--text);
+    padding: 7px 10px; font-size: 13px; border-radius: 6px; white-space: nowrap; }
+  .more-menu-panel .more-item:hover, .more-menu-panel .more-item:focus-visible {
+    background: var(--sel); color: var(--primary); outline: none; }
+  .more-menu-panel .more-item.on { color: var(--primary); font-weight: 600; }
+  .more-menu-panel .more-sep { height: 1px; background: var(--border); margin: 4px 2px; }
+  .more-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: #f97316; margin-left: 6px; vertical-align: middle; }
+  #moreBtn[aria-expanded="true"] { background: #334155; }
   /* 转写 */
   .transcript-block { margin: 8px 0; }
   #transcriptView { width:100%; min-height:120px; background:#f8fafc; border:1px solid var(--border); border-radius:6px; padding:8px; font-size:12px; color:var(--text); resize:vertical; font-family:inherit; }
@@ -139,6 +186,9 @@
   .ocr-badge.warn { color:#b45309; background:#fffbeb; border-color:#fcd34d; cursor:pointer; }
   .ocr-badge.warn:hover { background:#fef3c7; }
   .root-dead { color:#dc2626; }
+  /* 排除规则里的“内置”标记（与用户自建规则区分） */
+  .tag-builtin { background:#eff6ff; color:#1d4ed8; border:1px solid #bfdbfe; border-radius:8px;
+    font-size:11px; padding:1px 6px; white-space:nowrap; }
   /* 当前项目的根目录路径（工具栏常驻，点击可直接打开） */
   #projRootBar { display:none; align-items:center; gap:5px; max-width:300px; font-size:11px;
     color:var(--muted); cursor:pointer; padding:3px 8px; border:1px solid var(--border);
@@ -157,8 +207,8 @@
   .tr-box .num { font-size:22px; font-weight:700; color:var(--primary); margin-top:8px; }
   .tr-box .cur { color:var(--muted); font-size:12px; margin-top:8px; word-break:break-all; }
   /* 通用弹窗遮罩（状态管理 / 目录选择 / 批量编辑 / 项目编辑） */
-  #statusModal, #dirModal, #batchModal, #projModal { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: none; align-items: center; justify-content: center; z-index: 120; }
-  #statusModal.show, #dirModal.show, #batchModal.show, #projModal.show { display: flex; }
+  #statusModal, #dirModal, #batchModal, #projModal, #excludeModal { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: none; align-items: center; justify-content: center; z-index: 120; }
+  #statusModal.show, #dirModal.show, #batchModal.show, #projModal.show, #excludeModal.show { display: flex; }
   /* 动态创建的通用遮罩（如 OCR 安装引导） */
   .modal-mask { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: flex; align-items: center; justify-content: center; z-index: 130; }
   /* 目录选择器常从项目编辑表单内触发，需始终压在 #projModal(z=120) 之上 */
@@ -194,6 +244,54 @@
   .st-row input[type=text] { flex: 1; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; }
   .st-row input[type=color] { width: 36px; height: 30px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+  /* 设置面板（复用 modal-box / more-menu / toast 视觉） */
+  #settingsModal { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: none; align-items: center; justify-content: center; z-index: 120; }
+  #settingsModal.show { display: flex; }
+  .set-box { width: 640px; max-width: 94vw; max-height: 88vh; display: flex; flex-direction: column; padding: 0; }
+  .set-head { padding: 16px 24px 10px; border-bottom: 1px solid var(--border); }
+  .set-head h3 { margin: 0; font-size: 15px; }
+  .set-head .sub { color: var(--muted); font-size: 12px; margin-top: 4px; line-height: 1.6; }
+  .set-err { color: #dc2626; font-size: 12px; margin: 6px 24px 0; }
+  .set-body { overflow: auto; padding: 4px 24px 10px; flex: 1; }
+  .set-group { margin: 14px 0 2px; font-size: 12px; font-weight: 600; color: var(--primary);
+    border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+  .set-row { padding: 8px 0; border-bottom: 1px dashed var(--border); }
+  .set-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .set-label { font-weight: 600; font-size: 13px; }
+  .set-src { font-size: 11px; border-radius: 8px; padding: 0 6px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+  .set-src.env { color: #b45309; background: #fffbeb; border-color: #fcd34d; }
+  .set-src.file { color: #15803d; background: #f0fdf4; border-color: #bbf7d0; }
+  .set-src.default { color: #64748b; background: #f8fafc; }
+  .set-eff { font-size: 11px; color: var(--muted); margin-left: auto; white-space: nowrap; }
+  .set-ctl { margin-top: 6px; }
+  .set-ctl select, .set-ctl input[type=text], .set-ctl input[type=number] {
+    width: 100%; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+  .set-ctl input:disabled, .set-ctl select:disabled { background: #f1f5f9; color: var(--muted); }
+  .set-ctl label.chk { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .set-help { color: var(--muted); font-size: 11.5px; line-height: 1.6; margin-top: 5px; }
+  .set-lock { color: #b45309; background: #fffbeb; border: 1px solid #fcd34d; border-radius: 6px;
+    padding: 5px 8px; font-size: 12px; margin-top: 6px; line-height: 1.6; }
+  /* 逐次提示词：详情行内编辑 + 批量弹窗（复用现有 modal-box / toast 视觉） */
+  #promptModal { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: none;
+    align-items: center; justify-content: center; z-index: 125; }
+  #promptModal.show { display: flex; }
+  .prompt-box { width: 560px; max-width: 94vw; }
+  .pm-sub { color: var(--muted); font-size: 12px; line-height: 1.6; margin-bottom: 8px; }
+  #promptInput, #detailPrompt { width: 100%; box-sizing: border-box; padding: 7px 9px; font-size: 13px;
+    border: 1px solid var(--border); border-radius: 6px; resize: vertical; line-height: 1.6; }
+  #detailPrompt { font-size: 12px; min-height: 56px; }
+  .pm-meta, .pe-meta { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+    font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .pm-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; }
+  #promptRecent { flex: 1; min-width: 0; padding: 5px 7px; border: 1px solid var(--border);
+    border-radius: 6px; font-size: 12px; }
+  .pm-tip { color: var(--muted); background: #f8fafc; border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 9px; font-size: 11.5px; line-height: 1.65; margin-top: 8px; }
+  .prompt-editor { margin-top: 10px; border: 1px dashed var(--border); border-radius: 8px;
+    padding: 8px 10px; background: #f8fafc; }
+  .pe-head { display: flex; justify-content: space-between; gap: 8px; align-items: center;
+    font-size: 12px; margin-bottom: 6px; }
+  .pe-head span { color: var(--muted); font-size: 11px; }
 </style>
 </head>
 <body>
@@ -224,11 +322,22 @@
   <input id="extFilter" placeholder="多格式如 png, jpg, mp4" style="width:160px;display:none" />
   <span id="tagFilter"></span>
   <div class="spacer"></div>
-  <button class="btn-ghost btn-sm" id="missingBtn" title="默认隐藏磁盘上已删除的文件；点击可显示（便于找回其备注）">👻 显示已失效</button>
-  <button class="btn-ghost btn-sm" id="watchBtn" title="自动同步新增/修改/删除的文件">👁 实时感知</button>
-  <button class="btn-ghost btn-sm" id="statusMgrBtn">⚙ 管理状态</button>
-  <button class="btn-ghost btn-sm" id="tasksBtn">📋 任务清单</button>
-  <button class="btn-ghost btn-sm" id="debugBtn" title="历史提示/错误日志，可复制，便于反馈问题">🐞 调试</button>
+  <!-- 低频维护类操作统一收进「更多 ⋯」，菜单项沿用原有 id 与处理函数 -->
+  <div class="more-menu" id="moreMenuWrap">
+    <div class="more-menu-panel" id="moreMenu" role="menu" aria-label="更多维护操作" hidden>
+      <button class="btn-ghost btn-sm more-item" role="menuitem" id="missingBtn" title="默认隐藏磁盘上已删除的文件；点击可显示（便于找回其备注）">👻 显示已失效</button>
+      <div class="more-sep"></div>
+      <button class="btn-ghost btn-sm more-item" role="menuitem" id="watchBtn" title="自动同步新增/修改/删除的文件">👁 实时感知</button>
+      <button class="btn-ghost btn-sm more-item" role="menuitem" id="excludeBtn" title="跳过 .git / node_modules 等目录，不再扫描入索引">🚫 排除规则</button>
+      <button class="btn-ghost btn-sm more-item" role="menuitem" id="statusMgrBtn">⚙ 管理状态</button>
+      <div class="more-sep"></div>
+      <button class="btn-ghost btn-sm more-item" role="menuitem" id="settingsBtn" title="转写 / OCR / 系统参数，可视化修改">⚙ 设置</button>
+      <button class="btn-ghost btn-sm more-item" role="menuitem" id="tasksBtn">📋 任务清单</button>
+      <button class="btn-ghost btn-sm more-item" role="menuitem" id="debugBtn" title="历史提示/错误日志，可复制，便于反馈问题">🐞 调试</button>
+    </div>
+    <button class="btn-ghost btn-sm" id="moreBtn" aria-haspopup="menu" aria-expanded="false"
+        aria-controls="moreMenu" title="更多维护类操作">更多 ⋯<span class="more-dot" id="moreDot" hidden></span></button>
+  </div>
   <div class="selbar" id="selBar" style="display:none">
     <span id="selCount">已选 0</span>
     <button class="btn-primary btn-sm" id="exportBtn">导出选中</button>
@@ -251,7 +360,7 @@
   <!-- 中：文件清单 -->
   <div class="col" id="listCol">
     <div class="col-title">
-      <input type="checkbox" id="selectAll" style="vertical-align:middle" /> 全选本页
+      <input type="checkbox" id="selectAll" style="vertical-align:middle" /> <span id="selectAllLabel">全选本页</span>
       <span id="listTitle" style="float:right;font-weight:400"></span>
     </div>
     <table>
@@ -375,11 +484,69 @@
   </div>
 </div></div>
 
+<!-- 排除规则弹窗 -->
+<div id="excludeModal"><div class="modal-box" style="width:540px">
+  <h3>🚫 排除规则</h3>
+  <div style="font-size:12px;color:var(--muted);line-height:1.7;margin-bottom:8px">
+    命中规则的目录 / 文件不再扫描入索引。支持通配 <code>**/node_modules/**</code>、<code>*.tmp</code>；
+    不含通配符时按路径包含匹配（如 <code>.git</code>）。规则只影响之后的扫描与“清理已索引”，不会删除磁盘文件。
+  </div>
+  <div class="root-row">
+    <input id="excludeInput" placeholder="如：**/node_modules/** 或 .git" />
+    <button class="btn-primary btn-sm" id="addExcludeBtn">＋ 添加</button>
+  </div>
+  <div id="excludeList" style="max-height:240px;overflow:auto;margin-top:10px"></div>
+  <div style="font-size:12px;color:var(--muted);line-height:1.7;margin-top:10px">
+    带「内置」标记的规则为默认项，可删除且<b>删除后不会再自动恢复</b>；后悔时可点「恢复默认规则」找回。
+    新增规则只影响之后的扫描；此前已索引进库的 <code>.git</code> / <code>node_modules</code> 内容不会自动消失，
+    需要清理时点「清理已索引」（只删索引记录，不动磁盘文件）。
+  </div>
+  <div class="modal-actions">
+    <button class="btn-ghost btn-sm" id="restoreExcludeBtn" title="把缺失的内置默认规则补回来（不改动用户自建规则）">恢复默认规则</button>
+    <button class="btn-ghost btn-sm" id="pruneExcludeBtn" title="按当前规则删除已索引的记录（不删除磁盘文件）">清理已索引</button>
+    <button class="btn-ghost btn-sm" id="closeExclude">关闭</button>
+  </div>
+</div></div>
+
+<!-- 设置面板 -->
+<div id="settingsModal"><div class="modal-box set-box">
+  <div class="set-head">
+    <h3>⚙ 设置</h3>
+    <div class="sub">优先级：环境变量 &gt; config.json &gt; 代码默认值。带「环境变量」标记的项为只读，界面修改不会生效。</div>
+  </div>
+  <div class="set-err" id="settingsErr"></div>
+  <div class="set-body" id="settingsBody"></div>
+  <div class="modal-actions" style="padding:10px 24px 16px;border-top:1px solid var(--border);margin-top:0">
+    <span id="settingsFile" style="margin-right:auto;font-size:11px;color:var(--muted);word-break:break-all"></span>
+    <button class="btn-ghost btn-sm" id="cancelSettings">关闭</button>
+    <button class="btn-primary btn-sm" id="saveSettingsBtn">保存</button>
+  </div>
+</div></div>
+
+<!-- 批量转写提示词（一次输入、应用于本批） -->
+<div id="promptModal"><div class="modal-box prompt-box">
+  <h3>🎙 转写提示词（本批）</h3>
+  <div class="pm-sub" id="promptScope"></div>
+  <textarea id="promptInput" rows="4" maxlength="500" spellcheck="false"
+    placeholder="留空 = 各文件沿用各自上次提示 / 全局默认；也可填 off 关闭提示"></textarea>
+  <div class="pm-meta"><span id="promptCount"></span><span>Whisper 提示预算约 224 token，超出从开头截断</span></div>
+  <div class="pm-row"><label>最近使用</label>
+    <select id="promptRecent"><option value="">最近使用…</option></select></div>
+  <div class="pm-tip" id="promptTip"></div>
+  <div class="modal-actions">
+    <button class="btn-ghost btn-sm" id="promptDefault">清空（用各自默认）</button>
+    <button class="btn-ghost btn-sm" id="cancelPrompt">取消</button>
+    <button class="btn-primary btn-sm" id="startPromptTranscribe">开始转写</button>
+  </div>
+</div></div>
+
 <!-- 扫描进度 -->
 <div id="scanOverlay"><div class="scan-box">
   <div>正在扫描并建立索引…</div>
   <div class="num" id="scanNum">0</div>
   <div style="color:var(--muted);font-size:12px;margin-top:6px" id="scanRoot"></div>
+  <div id="scanIssues" style="display:none;margin-top:10px;max-height:220px;overflow:auto;text-align:left;font-size:12px;width:min(560px,88vw)"></div>
+  <button class="btn-ghost btn-sm" id="scanIssuesClose" style="display:none;margin-top:10px">关闭</button>
 </div></div>
 
 <!-- 转写进度 -->

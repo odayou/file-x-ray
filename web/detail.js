@@ -1,11 +1,56 @@
 // 右侧详情面板：预览/文字稿/保存/OCR转写按钮
 // ---------- 详情 ----------
-async function selectFile(id, path){
-  state.currentId=id; saveState();
+// hit：搜索命中定位参数 {q, field, occ}。来自列表片段时为具体字段与第几处；
+// 来自结果行/普通点击时缺省 → 沿用当前搜索词，并从正文第一处开始。
+async function selectFile(id, path, hit){
+  state.currentId=id;
+  if(hit && hit.q){
+    state.hit={ q:hit.q, field:hit.field||null, occ:hit.occ||0 };
+  }else{
+    state.hit = state.search.trim() ? { q:state.search.trim(), field:null, occ:0 } : null;
+  }
+  saveState();
   document.querySelectorAll('tr.row').forEach(tr=>tr.classList.toggle('active', parseInt(tr.dataset.id)===id));
   let d;
   try{ d=await apiGet('/api/file/'+id); }catch(e){ toast('加载失败: '+e.message); return; }
   renderDetail(d);
+}
+
+// 详情里参与“命中定位”的正文：点击片段所在字段优先，否则按文件类型取主字段
+function hitTextFor(d, field){
+  if(field==='note') return d.note||'';
+  if(field==='transcript') return d.transcript||'';
+  if(field==='content') return (d.category==='pdf') ? (d.pdf_text||'')
+                         : (d.category==='doc' ? (d.doc_text||'') : (d.content||d.preview_text||''));
+  if(d.category==='pdf') return d.pdf_text||'';
+  if(d.category==='doc') return d.doc_text||d.content||d.preview_text||'';
+  if(d.category==='image'||d.category==='audio'||d.category==='video') return d.transcript||'';
+  return d.content||d.preview_text||'';
+}
+
+// 详情命中导航：全部命中处已由 highlightHtml 一次性构建成 <mark>，
+// 这里只切换 .cur 高亮/滚动 + 维护“第 x / 共 N 处”；上一处/下一处循环。
+function setupHitNav(hv){
+  const view=document.getElementById('hitView');
+  if(!view || !hv) return;
+  const marks=Array.from(view.querySelectorAll('mark.hit-mark'));
+  if(!marks.length) return;
+  let cur=Math.min(Math.max(state.hit && state.hit.occ || 0, 0), marks.length-1);
+  const label=document.getElementById('hitCount');
+  const render=()=>{
+    marks.forEach((m,i)=>m.classList.toggle('cur', i===cur));
+    if(label) label.textContent='第 '+(cur+1)+' / 共 '+hv.total+' 处';
+  };
+  const go=i=>{
+    cur=(i%marks.length+marks.length)%marks.length;   // 走到头回到起点
+    render();
+    marks[cur].scrollIntoView({block:'center'});
+  };
+  const prev=document.getElementById('hitPrev'), next=document.getElementById('hitNext');
+  if(prev) prev.onclick=()=>go(cur-1);
+  if(next) next.onclick=()=>go(cur+1);
+  render();
+  marks[cur].scrollIntoView({block:'center'});        // 进入即定位（点第 2 个片段就落在第 2 处）
 }
 // 媒体/<a> 标签无法携带 X-Fit-Token 头，需把令牌放进 query 参数，否则预览/下载请求会被 401 拦截
 function rawWithToken(d){
@@ -25,20 +70,47 @@ function renderDetail(d){
   else if(d.category==='video'){ preview=`<video controls src="${rawWithToken(d)}"></video>`; }
   else if(d.category==='audio'){ preview=`<audio controls src="${rawWithToken(d)}" style="width:100%;margin-top:80px"></audio>`; }
   else if(d.category==='pdf'){ preview=`<iframe src="${rawWithToken(d)}" style="width:100%;height:360px;border:0"></iframe>`; }
+  else if(d.category==='doc'){ preview=`<pre>${esc(d.doc_text||d.preview_text)||'(未抽取到文字)'}</pre>`; }
   else if(d.category==='text'){ preview=`<pre>${esc(d.preview_text)||'(空文件)'}</pre>`; }
   else{ preview='<div class="ph">该类型不支持内嵌预览<br><a class="dl" href="'+rawWithToken(d)+'" target="_blank">打开/下载原文件</a></div>'; }
+
+  // 搜索命中定位块：从搜索结果进入详情时，把查询词带过来，正文全部命中处一次性高亮，
+  // 提供“第 x / 共 N 处”与上一处/下一处；点列表第 2 个片段进入时直接落在第 2 处。
+  let hitBlock='', hv=null;
+  const hq=(state.hit && state.hit.q || '').trim();
+  if(!isDir && hq){
+    const field=state.hit.field||null;
+    hv=highlightHtml(hitTextFor(d, field), [hq], 200);   // 上限保护：超长正文最多标 200 处
+    if(hv.total){
+      // 纯文本文件：直接让预览区变成高亮视图，避免同一段正文重复渲染两份
+      const inPreview = (d.category==='text'||d.category==='doc') && (!field || field==='content');
+      if(inPreview) preview=`<pre id="hitView">${hv.html}</pre>`;
+      const limited = hv.total>hv.shown ? `<span class="hit-warn">命中过多，已显示前 ${hv.shown} 处</span>` : '';
+      hitBlock=`<div class="hit-block">
+        <div class="hit-head">
+          <span class="hit-title">🔍 搜索命中<span class="hit-q">${esc(hq)}</span></span>
+          <span id="hitCount" class="hit-count-text"></span>
+          <button class="btn-ghost btn-sm" id="hitPrev">⬆ 上一处</button>
+          <button class="btn-ghost btn-sm" id="hitNext">⬇ 下一处</button>
+          ${limited}
+        </div>
+        ${inPreview?'':`<pre id="hitView" class="hit-pre">${hv.html}</pre>`}
+      </div>`;
+    }
+  }
 
   const statusOpts=state.statuses.map(s=>`<option ${s.label===d.status?'selected':''}>${esc(s.label)}</option>`).join('');
   const tagsHtml=(d.tags||[]).map(t=>`<span class="tg" data-tag="${esc(t)}">#${esc(t)}<span data-x="1">✕</span></span>`).join('');
   // 常驻操作条（悬浮在详情栏顶部）：保存 / 校对 / 打开文件夹 / 选择 / 新窗口
   document.getElementById('detailActionBar').innerHTML=`
     <button class="btn-primary btn-sm" id="saveDetail" title="保存备注/状态/标签/文字稿">💾 保存</button>
-    ${(!isDir && (d.category==='image'||d.category==='pdf'))?'<button class="btn-ghost btn-sm" id="proofBtn">🔍 校对</button>':''}
+    ${(!isDir && (d.category==='image'||d.category==='pdf'||d.category==='doc'))?'<button class="btn-ghost btn-sm" id="proofBtn">🔍 校对</button>':''}
     <button class="btn-ghost btn-sm" id="openFolder">📂 ${isDir?'打开此目录':'打开文件夹'}</button>
     ${isDir?'':`<button class="btn-ghost btn-sm" id="toggleSel">${state.selection.has(d.id)?'移出选择':'加入选择'}</button>
     <a class="btn-ghost btn-sm" style="text-decoration:none; border-radius: 6px;" href="${rawWithToken(d)}" target="_blank">新窗口打开</a>`}`;
   document.getElementById('detail').innerHTML=`
     <div class="preview">${preview}</div>
+    ${hitBlock}
     <div class="meta-row"><b>名称</b><span>${esc(d.name)}</span></div>
     <div class="meta-row"><b>路径</b><span style="word-break:break-all">${esc(d.path)}</span></div>
     <div class="meta-row"><b>大小</b><span>${isDir?'—':humanSize(d.size)}</span><b>类型</b><span>${isDir?'目录':esc(d.ext||'')}</span></div>
@@ -55,21 +127,28 @@ function renderDetail(d){
     const tags=Array.from(document.querySelectorAll('#detailTags .tg')).map(x=>x.dataset.tag);
     const payload={note:document.getElementById('detailNote').value,
                    status:document.getElementById('detailStatus').value, tags};
-    // 文字稿可编辑后随详情一起保存（图片/音视频 -> transcript；PDF -> content）
+    // 文字稿可编辑后随详情一起保存（图片/音视频 -> transcript；PDF / Office -> content）
     const tv=document.getElementById('transcriptView');
-    if(tv){ if(d.category==='pdf') payload.pdf_text=tv.value; else payload.transcript=tv.value; }
+    if(tv){ if(d.category==='pdf'||d.category==='doc') payload.pdf_text=tv.value; else payload.transcript=tv.value; }
     try{ await apiPut('/api/file/'+d.id, payload);
       toast('已保存'); loadStats(); loadTags(); loadFiles(); }catch(e){ toast('保存失败: '+e.message); }
   };
   document.getElementById('saveDetail').onclick=save;
   document.getElementById('navPrev').onclick=()=>navDetail(-1);
   document.getElementById('navNext').onclick=()=>navDetail(1);
+  setupHitNav(hv);                       // 命中导航（无命中时内部直接返回）
   const proofBtn=document.getElementById('proofBtn');
   if(proofBtn) proofBtn.onclick=()=>openProofread(d);
   document.getElementById('openFolder').onclick=async()=>{ try{ await apiPost('/api/open',{path:d.path}); toast('已调用系统打开文件夹'); }catch(e){ toast('打开失败: '+e.message); } };
   document.getElementById('toggleSel').onclick=()=>{ toggleSelect(d.id); renderDetail(d); };
   const trBtn=document.getElementById('transcribeBtn');
-  if(trBtn) trBtn.onclick=()=>startTranscribe([d.id]);
+  const dp=document.getElementById('detailPrompt');
+  const dpc=document.getElementById('detailPromptCount');
+  if(dp){
+    const upd=()=>{ if(dpc) dpc.textContent='已填 '+dp.value.length+' / 500 字'+(dp.value.trim()?'':'（留空=全局默认）'); };
+    dp.addEventListener('input',upd); upd();
+  }
+  if(trBtn) trBtn.onclick=()=>startTranscribe([d.id], {prompt: dp ? dp.value : undefined});
   const ocrBtn=document.getElementById('ocrBtn');
   if(ocrBtn) ocrBtn.onclick=()=>startOcr([d.id]);
   const pdfProofBtn=document.getElementById('pdfProofBtn');
@@ -104,7 +183,8 @@ function renderDetail(d){
 // ---------- 校对模式：放大区域 = 大图（缩放/平移）+ 可编辑文字并排 ----------
 function openProofread(d){
   const isPdf = d.category==='pdf';
-  const textKey = isPdf ? 'pdf_text' : 'transcript';
+  const isOffice = d.category==='doc';
+  const textKey = isPdf ? 'pdf_text' : (isOffice ? 'doc_text' : 'transcript');
   const overlay=document.createElement('div');
   overlay.id='proofModal';
   overlay.innerHTML=`
@@ -112,14 +192,15 @@ function openProofread(d){
       <b>校对模式</b>
       <span class="proof-name">${esc(d.name)}</span>
       <span class="spacer"></span>
-      ${isPdf?'':'<span class="proof-tip">滚轮缩放 · 按住拖动 · 双击复位</span>'}
+      ${(isPdf||isOffice)?'':'<span class="proof-tip">滚轮缩放 · 按住拖动 · 双击复位</span>'}
       <button class="btn-primary btn-sm" id="proofSave">保存文字</button>
       <button class="btn-ghost btn-sm" id="proofClose">退出校对</button>
     </div>
     <div class="proof-main">
       <div class="proof-view" id="proofView">
         ${isPdf?`<iframe src="${rawWithToken(d)}" style="width:100%;height:100%;border:0"></iframe>`
-               :`<img id="proofImg" src="${rawWithToken(d)}" alt="">`}
+               : (isOffice?'<div class="ph">Office 文档不提供内嵌预览<br>右侧为抽取出的正文，可直接修改校对</div>'
+                          :`<img id="proofImg" src="${rawWithToken(d)}" alt="">`)}
       </div>
       <textarea class="proof-text" id="proofText" spellcheck="false"
         placeholder="左侧对照原文，这里可直接修改，改完点“保存文字”">${esc(d[textKey]||'')}</textarea>
@@ -138,10 +219,10 @@ function openProofread(d){
   };
   overlay.querySelector('#proofSave').onclick=async()=>{
     const val=overlay.querySelector('#proofText').value;
-    try{ await apiPut('/api/file/'+d.id, isPdf?{pdf_text:val}:{transcript:val});
+    try{ await apiPut('/api/file/'+d.id, (isPdf||isOffice)?{pdf_text:val}:{transcript:val});
       toast('文字已保存，可被搜索'); }catch(e){ toast('保存失败: '+e.message); }
   };
-  if(!isPdf){
+  if(!isPdf && !isOffice){
     const view=overlay.querySelector('#proofView'), img=overlay.querySelector('#proofImg');
     let scale=1, tx=0, ty=0, drag=null;
     const apply=()=>{ img.style.transform='translate('+tx+'px,'+ty+'px) scale('+scale+')'; };
