@@ -13,6 +13,11 @@ dist/
 # SQLite WAL/SHM 残留
 *.db-*
 
+# 本地运行配置与单实例锁（用户设置，不随仓库分发）
+# 注意：config.json 若已被跟踪，需执行 `git rm --cached config.json` 才会真正脱库
+config.json
+instance.lock
+
 # 运行日志（logs/ 与 DB 同目录生成，打包版亦同）
 logs/
 *.log

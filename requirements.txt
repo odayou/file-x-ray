@@ -10,7 +10,10 @@ uvicorn>=0.27
 # 上游修复尚未发版，因此把 av 锁在 18.x；等 faster-whisper 1.2.2 发布后可解除。
 faster-whisper>=1.2.1,<1.3
 av>=18.1,<19
-pymupdf>=1.24
+# 只依赖 PyMuPDF 本体：2.x 元包会强制安装 pymupdf-layout / pymupdf4llm / onnxruntime
+# / pandas 等版面分析链路（打包后多出约 100MB），本程序只用 open/文本抽取/页面渲染。
+# 1.28.x 是 2.0 之前的稳定线，核心 API 与 1.24 一致。
+pymupdf>=1.24,<2
 pytesseract>=0.3.10
 pillow>=10.0
 typing_extensions~=4.14.0

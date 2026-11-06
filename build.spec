@@ -46,8 +46,10 @@ def _win_version_file():
 # 第三方包常带 DLL/资源：显式收集，避免打包后转写/PDF 功能缺件。
 extra_datas, extra_binaries, extra_hiddenimports = [], [], []
 try:
-    from PyInstaller.utils.hooks import collect_all
-    for _pkg in ("ctranslate2", "faster_whisper", "pymupdf"):
+    from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
+    # ctranslate2 / faster_whisper 整包收集是必要的：前者带 ctranslate2.dll
+    # 与 libiomp5md.dll，后者带 assets/silero_vad_v6.onnx（VAD 必需）。
+    for _pkg in ("ctranslate2", "faster_whisper"):
         try:
             _d, _b, _h = collect_all(_pkg)
             extra_datas += _d
@@ -55,6 +57,14 @@ try:
             extra_hiddenimports += _h
         except Exception:
             pass
+    # pymupdf 只收集核心动态库（_mupdf.pyd / mupdfcpp64.dll 等），**不要 collect_all**：
+    # 2.x 的 collect_all 会把 layout（近 50MB ONNX 模型）和 mupdf-devel（头文件/.lib）
+    # 一起打包，并顺带把 onnxruntime.transformers → pandas/matplotlib 拉进来。
+    # 本程序只用 open/文本抽取/页面渲染；1.28.x 没有 layout，收集方式完全兼容。
+    try:
+        extra_binaries += collect_dynamic_libs("pymupdf")
+    except Exception:
+        pass
 except Exception:
     pass
 
@@ -71,7 +81,21 @@ a = Analysis(
     ] + extra_hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # PyMuPDF 2.x 的可选版面分析链路（本程序只用基础文本抽取/渲染）。
+        # 1.28.x 没有这些模块，对新装环境无影响；本机若仍是 2.0，pymupdf 导入处的
+        # try/except ImportError 会静默跳过。
+        'pymupdf.layout', 'pymupdf4llm', 'pymupdf_layout',
+        # 上述链路的传递依赖：PyMuPDF 的 Table.to_pandas()/layout 只是在函数内惰性
+        # import，打包时删掉不影响核心 PDF 抽取与渲染。
+        'pandas', 'matplotlib', 'lxml',
+        'IPython', 'jedi', 'zmq', 'tkinter', '_tkinter',
+        # onnxruntime 本体必须保留（faster-whisper 开启 VAD 时用 Silero VAD），
+        # 只裁掉 transformers/quantization/tools/training 这些开发/训练子包；
+        # 正是它们把 pandas/matplotlib 拉进产物。
+        'onnxruntime.transformers', 'onnxruntime.quantization',
+        'onnxruntime.tools', 'onnxruntime.training',
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
